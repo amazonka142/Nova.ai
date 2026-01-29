@@ -6,7 +6,7 @@ struct SubscriptionView: View {
     
     @State private var showActivationAlert = false
     @State private var selectedPlanForActivation = ""
-    @State private var selectedPlan: String = "Pro"
+    @State private var selectedPlan: String = "Free"
     
     @AppStorage("appLanguage") private var selectedLanguage: AppLanguage = .russian
     
@@ -98,49 +98,66 @@ struct SubscriptionView: View {
                 
                 // Purchase Buttons
                 VStack(spacing: 12) {
-                    Button(action: {
-                        selectedPlanForActivation = "Nova Pro"
-                        showActivationAlert = true
-                    }) {
-                        HStack {
-                            VStack(alignment: .leading) {
-                                Text("Nova Pro")
-                                    .font(.headline)
-                                Text(selectedLanguage == .russian ? "299 ₽ / мес" : "$2.99 / mo")
-                                    .font(.caption)
-                                    .opacity(0.8)
+                    if selectedPlan == "Free" {
+                        Button(action: {
+                            dismiss()
+                        }) {
+                            HStack {
+                                Spacer()
+                                Text(selectedLanguage == .russian ? "Меня все устраивает" : "I'm satisfied")
+                                    .fontWeight(.bold)
+                                Spacer()
                             }
-                            Spacer()
-                            Text(selectedLanguage == .russian ? "Активировать" : "Activate")
-                                .fontWeight(.bold)
+                            .padding()
+                            .background(Color.secondary.opacity(0.15))
+                            .foregroundColor(.primary)
+                            .cornerRadius(16)
                         }
-                        .padding()
-                        .background(Color.blue.opacity(0.1))
-                        .foregroundColor(.blue)
-                        .cornerRadius(16)
-                    }
-                    
-                    Button(action: {
-                        selectedPlanForActivation = "Nova Max"
-                        showActivationAlert = true
-                    }) {
-                        HStack {
-                            VStack(alignment: .leading) {
-                                Text("Nova Max")
-                                    .font(.headline)
-                                Text(selectedLanguage == .russian ? "699 ₽ / мес" : "$6.99 / mo")
-                                    .font(.caption)
-                                    .opacity(0.8)
+                    } else if selectedPlan == "Pro" {
+                        Button(action: {
+                            selectedPlanForActivation = "Nova Pro"
+                            showActivationAlert = true
+                        }) {
+                            HStack {
+                                VStack(alignment: .leading) {
+                                    Text("Nova Pro")
+                                        .font(.headline)
+                                    Text(selectedLanguage == .russian ? "299 ₽ / мес" : "$2.99 / mo")
+                                        .font(.caption)
+                                        .opacity(0.8)
+                                }
+                                Spacer()
+                                Text(selectedLanguage == .russian ? "Активировать" : "Activate")
+                                    .fontWeight(.bold)
                             }
-                            Spacer()
-                            Text(selectedLanguage == .russian ? "Активировать" : "Activate")
-                                .fontWeight(.bold)
+                            .padding()
+                            .background(Color.blue.opacity(0.1))
+                            .foregroundColor(.blue)
+                            .cornerRadius(16)
                         }
-                        .padding()
-                        .background(LinearGradient(colors: [.blue, .purple], startPoint: .leading, endPoint: .trailing))
-                        .foregroundColor(.white)
-                        .cornerRadius(16)
-                        .shadow(radius: 5)
+                    } else if selectedPlan == "Max" {
+                        Button(action: {
+                            selectedPlanForActivation = "Nova Max"
+                            showActivationAlert = true
+                        }) {
+                            HStack {
+                                VStack(alignment: .leading) {
+                                    Text("Nova Max")
+                                        .font(.headline)
+                                    Text(selectedLanguage == .russian ? "699 ₽ / мес" : "$6.99 / mo")
+                                        .font(.caption)
+                                        .opacity(0.8)
+                                }
+                                Spacer()
+                                Text(selectedLanguage == .russian ? "Активировать" : "Activate")
+                                    .fontWeight(.bold)
+                            }
+                            .padding()
+                            .background(LinearGradient(colors: [.blue, .purple], startPoint: .leading, endPoint: .trailing))
+                            .foregroundColor(.white)
+                            .cornerRadius(16)
+                            .shadow(radius: 5)
+                        }
                     }
                 }
                 .padding(.horizontal)
@@ -157,6 +174,15 @@ struct SubscriptionView: View {
             Button("OK", role: .cancel) { }
         } message: {
             Text(selectedLanguage == .russian ? "Напиши мне в Telegram @Vladik40perc, чтобы получить доступ. После оплаты я включу функции мгновенно." : "Write to me on Telegram @Vladik40perc to get access. I will enable features instantly after payment.")
+        }
+        .onAppear {
+            if viewModel.isMax {
+                selectedPlan = "Max"
+            } else if viewModel.isPro {
+                selectedPlan = "Pro"
+            } else {
+                selectedPlan = "Free"
+            }
         }
     }
 }
