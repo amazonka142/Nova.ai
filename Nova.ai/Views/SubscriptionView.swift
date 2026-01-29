@@ -81,7 +81,7 @@ struct SubscriptionView: View {
                         
                         // Блок 3: Экстра (Max)
                         Group {
-                            ComparisonRow(title: selectedLanguage == .russian ? "Поиск в интернете" : "Web Search", free: false, pro: false, max: true, selectedPlan: selectedPlan)
+                            ComparisonRow(title: selectedLanguage == .russian ? "Поиск в интернете" : "Web Search", free: false, pro: true, max: true, selectedPlan: selectedPlan)
                             ComparisonRow(title: selectedLanguage == .russian ? "Deep Research (Альфа)" : "Deep Research (Alpha)", free: "minus", pro: "minus", max: selectedLanguage == .russian ? "10/н" : "10/w", selectedPlan: selectedPlan)
                             ComparisonRow(title: selectedLanguage == .russian ? "Генерация картинок" : "Image Generation", free: selectedLanguage == .russian ? "20/д" : "20/d", pro: "check", max: "check", selectedPlan: selectedPlan)
                             ComparisonRow(title: "Quality Images", free: "minus", pro: "minus", max: selectedLanguage == .russian ? "20/д" : "20/d", selectedPlan: selectedPlan)
