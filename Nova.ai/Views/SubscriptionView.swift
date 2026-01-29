@@ -92,6 +92,7 @@ struct SubscriptionView: View {
                     .padding(.horizontal)
                     .padding(.bottom, 20)
                 }
+                .background(ColumnBackground(selectedPlan: selectedPlan))
                 .background(Color(UIColor.secondarySystemBackground))
                 .cornerRadius(16)
                 .padding()
@@ -222,14 +223,8 @@ struct ComparisonRow: View {
             
             HStack(spacing: 20) {
                 StatusIcon(status: free, color: .gray)
-                    .background(selectedPlan == "Free" ? Color.gray.opacity(0.15) : Color.clear)
-                    .cornerRadius(8)
                 StatusIcon(status: pro, color: .blue)
-                    .background(selectedPlan == "Pro" ? Color.blue.opacity(0.15) : Color.clear)
-                    .cornerRadius(8)
                 StatusIcon(status: max, color: .purple)
-                    .background(selectedPlan == "Max" ? Color.purple.opacity(0.15) : Color.clear)
-                    .cornerRadius(8)
             }
         }
     }
@@ -247,8 +242,28 @@ struct HeaderTitle: View {
             .frame(width: 50)
             .multilineTextAlignment(.center)
             .padding(.vertical, 4)
-            .background(isSelected ? color.opacity(0.15) : Color.clear)
-            .cornerRadius(8)
+    }
+}
+
+struct ColumnBackground: View {
+    let selectedPlan: String
+    
+    var body: some View {
+        HStack {
+            Spacer()
+            HStack(spacing: 20) {
+                Rectangle()
+                    .fill(selectedPlan == "Free" ? Color.gray.opacity(0.15) : Color.clear)
+                    .frame(width: 50)
+                Rectangle()
+                    .fill(selectedPlan == "Pro" ? Color.blue.opacity(0.15) : Color.clear)
+                    .frame(width: 50)
+                Rectangle()
+                    .fill(selectedPlan == "Max" ? Color.purple.opacity(0.15) : Color.clear)
+                    .frame(width: 50)
+            }
+        }
+        .padding(.horizontal)
     }
 }
 
