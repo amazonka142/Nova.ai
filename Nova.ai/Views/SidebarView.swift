@@ -71,8 +71,12 @@ struct SidebarView: View {
         return String(emojis.prefix(1))
     }
     
+
+    
     var body: some View {
         VStack(alignment: .leading) {
+
+            
             // Заголовок меню
             HStack {
                 Text(selectedLanguage == .russian ? "История" : "History")
@@ -89,7 +93,7 @@ struct SidebarView: View {
                 }
             }
             .padding()
-            .padding(.top, 40) // Отступ для статус-бара
+            .padding(.top, 10) // Уменьшенный отступ
             
             // Галерея
             Button(action: {
