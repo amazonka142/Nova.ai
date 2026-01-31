@@ -9,6 +9,7 @@ struct SidebarView: View {
     @AppStorage("appLanguage") private var selectedLanguage: AppLanguage = .russian
     // Используем SwiftData для получения списка чатов
     @Query(sort: \ChatSession.lastModified, order: .reverse) private var sessions: [ChatSession]
+    @Query(sort: \ChatFolder.creationDate) private var folders: [ChatFolder]
     
     @State private var sessionToRename: ChatSession?
     @State private var newTitleInput: String = ""
@@ -17,14 +18,23 @@ struct SidebarView: View {
     @State private var showDeleteAlert = false
     @State private var isGalleryPresented = false
     
-    // Группировка сессий по датам
-    // Оптимизация: Форматтер создается один раз
+    // Folder State
+    @State private var showCreateFolderAlert = false
+    @State private var newFolderName = ""
+    @State private var newFolderEmoji = "📁"
+    @State private var selectedFolder: ChatFolder? // For detail view
+    @State private var sessionToMove: ChatSession? // For moving to folder
+    @State private var showMoveSheet = false
+    
+    // Группировка сессий по датам (исключая те, что в папках)
     private var groupedSessions: [(String, [ChatSession])] {
         let calendar = Calendar.current
-        
         var sections: [(String, [ChatSession])] = []
         
-        for session in sessions {
+        // Filter out sessions that are in a folder
+        let filteredSessions = sessions.filter { $0.folder == nil }
+        
+        for session in filteredSessions {
             let key: String
             if calendar.isDateInToday(session.lastModified) {
                 key = selectedLanguage == .russian ? "Сегодня" : "Today"
@@ -98,6 +108,60 @@ struct SidebarView: View {
             // Список чатов
             ScrollView {
                 LazyVStack(spacing: 4) {
+                    
+                    // --- FOLDERS SECTION ---
+                    VStack(alignment: .leading) {
+                        HStack {
+                            Text(selectedLanguage == .russian ? "Папки" : "Folders")
+                                .font(.caption)
+                                .fontWeight(.semibold)
+                                .foregroundColor(.secondary)
+                            Spacer()
+                            Button(action: {
+                                newFolderName = ""
+                                newFolderEmoji = "📁"
+                                showCreateFolderAlert = true
+                            }) {
+                                Image(systemName: "folder.badge.plus")
+                                    .font(.caption)
+                                    .foregroundColor(.blue)
+                            }
+                        }
+                        .padding(.horizontal)
+                        .padding(.top, 12)
+                        
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 12) {
+                                ForEach(folders) { folder in
+                                    Button(action: {
+                                        selectedFolder = folder
+                                    }) {
+                                        VStack {
+                                            Text(folder.emoji)
+                                                .font(.title)
+                                            Text(folder.name)
+                                                .font(.caption)
+                                                .lineLimit(1)
+                                                .foregroundColor(.primary)
+                                        }
+                                        .frame(width: 70, height: 70)
+                                        .background(Color(UIColor.secondarySystemBackground))
+                                        .cornerRadius(12)
+                                    }
+                                    .contextMenu {
+                                        Button(role: .destructive) {
+                                            viewModel.deleteFolder(folder)
+                                        } label: {
+                                            Label(selectedLanguage == .russian ? "Удалить папку" : "Delete Folder", systemImage: "trash")
+                                        }
+                                    }
+                                }
+                            }
+                            .padding(.horizontal)
+                        }
+                    }
+                    // -----------------------
+                    
                     ForEach(groupedSessions, id: \.0) { section in
                         Text(section.0)
                             .font(.caption)
@@ -120,8 +184,6 @@ struct SidebarView: View {
                                 .foregroundColor(.primary)
                             
                             Spacer()
-                            
-                            // Кнопка корзины УБРАНА отсюда
                         }
                         .padding(.vertical, 12)
                         .padding(.horizontal)
@@ -137,6 +199,13 @@ struct SidebarView: View {
                         }
                         // Контекстное меню по долгому нажатию
                         .contextMenu {
+                            Button {
+                                sessionToMove = session
+                                showMoveSheet = true
+                            } label: {
+                                Label(selectedLanguage == .russian ? "Добавить в папку" : "Add to Folder", systemImage: "folder")
+                            }
+                            
                             Button {
                                 sessionToRename = session
                                 newTitleInput = session.title
@@ -233,6 +302,54 @@ struct SidebarView: View {
             }
         }
         .background(Color(UIColor.systemBackground))
+        // Sheets & Alerts
+        .sheet(item: $selectedFolder) { folder in
+            NavigationStack {
+                FolderDetailView(folder: folder, viewModel: viewModel, isMenuOpen: $isMenuOpen)
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Закрыть") { selectedFolder = nil }
+                        }
+                    }
+            }
+            .presentationDetents([.medium, .large])
+        }
+        .sheet(isPresented: $showMoveSheet) {
+            NavigationStack {
+                List {
+                    ForEach(folders) { folder in
+                        Button {
+                            if let session = sessionToMove {
+                                viewModel.moveChatToFolder(session, folder: folder)
+                            }
+                            showMoveSheet = false
+                            sessionToMove = nil
+                        } label: {
+                            HStack {
+                                Text(folder.emoji)
+                                Text(folder.name)
+                                Spacer()
+                            }
+                        }
+                    }
+                }
+                .navigationTitle(selectedLanguage == .russian ? "Выберите папку" : "Select Folder")
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Отмена") { showMoveSheet = false }
+                    }
+                }
+            }
+            .presentationDetents([.medium])
+        }
+        .alert(selectedLanguage == .russian ? "Новая папка" : "New Folder", isPresented: $showCreateFolderAlert) {
+            TextField(selectedLanguage == .russian ? "Название" : "Name", text: $newFolderName)
+            TextField("Emoji", text: $newFolderEmoji)
+            Button(selectedLanguage == .russian ? "Отмена" : "Cancel", role: .cancel) { }
+            Button(selectedLanguage == .russian ? "Создать" : "Create") {
+                viewModel.createFolder(name: newFolderName, emoji: newFolderEmoji.isEmpty ? "📁" : newFolderEmoji)
+            }
+        }
         .alert(selectedLanguage == .russian ? "Переименовать чат" : "Rename Chat", isPresented: $showRenameAlert) {
             TextField(selectedLanguage == .russian ? "Название" : "Name", text: $newTitleInput)
             Button(selectedLanguage == .russian ? "Отмена" : "Cancel", role: .cancel) { }

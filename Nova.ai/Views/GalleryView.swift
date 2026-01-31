@@ -5,12 +5,12 @@ struct GalleryView: View {
     @Environment(\.dismiss) var dismiss
     @Query(sort: \Message.timestamp, order: .reverse) private var allMessages: [Message]
     
-    @State private var selectedImage: (Data, String)? = nil // Data, Prompt
+    @State private var selectedImageItem: GalleryItem? = nil
     @AppStorage("appLanguage") private var selectedLanguage: AppLanguage = .russian
     
     // Filter messages to get only images
     var imageMessages: [Message] {
-        allMessages.filter { $0.type == .image && $0.imageData != nil }
+        allMessages.filter { $0.type == .image && $0.imageData != nil && $0.role == .assistant }
     }
     
     let columns = [
@@ -38,7 +38,7 @@ struct GalleryView: View {
                         ForEach(imageMessages) { message in
                             if let data = message.imageData, let uiImage = UIImage(data: data) {
                                 Button(action: {
-                                    selectedImage = (data, message.content)
+                                    selectedImageItem = GalleryItem(data: data, prompt: message.content)
                                 }) {
                                     Image(uiImage: uiImage)
                                         .resizable()
@@ -60,10 +60,7 @@ struct GalleryView: View {
                     }
                 }
             }
-            .sheet(item: Binding(
-                get: { selectedImage.map { GalleryItem(data: $0.0, prompt: $0.1) } },
-                set: { _ in selectedImage = nil }
-            )) { item in
+            .sheet(item: $selectedImageItem) { item in
                 ImageViewer(imageData: item.data, prompt: item.prompt)
             }
         }
