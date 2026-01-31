@@ -1468,6 +1468,12 @@ final class ChatViewModel: ObservableObject {
         saveContext()
     }
     
+    func renameFolder(_ folder: ChatFolder, newName: String, newEmoji: String) {
+        folder.name = newName
+        folder.emoji = newEmoji
+        saveContext()
+    }
+    
     func moveChatToFolder(_ session: ChatSession, folder: ChatFolder) {
         session.folder = folder
         saveContext()
