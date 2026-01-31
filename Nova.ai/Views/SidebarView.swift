@@ -26,6 +26,12 @@ struct SidebarView: View {
     @State private var sessionToMove: ChatSession? // For moving to folder
     @State private var showMoveSheet = false
     
+    // Rename Folder State
+    @State private var showRenameFolderAlert = false
+    @State private var folderToRename: ChatFolder?
+    @State private var renameFolderName = ""
+    @State private var renameFolderEmoji = ""
+    
     // Группировка сессий по датам (исключая те, что в папках)
     private var groupedSessions: [(String, [ChatSession])] {
         let calendar = Calendar.current
@@ -54,6 +60,15 @@ struct SidebarView: View {
             }
         }
         return sections
+    }
+    
+    // Emoji Filter Helper
+    private func filterEmojiInput(_ input: String) -> String {
+        let emojis = input.filter { char in
+            guard let scalar = char.unicodeScalars.first else { return false }
+            return scalar.properties.isEmoji && (scalar.value > 0x238C || scalar.properties.isEmojiPresentation)
+        }
+        return String(emojis.prefix(1))
     }
     
     var body: some View {
@@ -149,6 +164,15 @@ struct SidebarView: View {
                                         .cornerRadius(12)
                                     }
                                     .contextMenu {
+                                        Button {
+                                            folderToRename = folder
+                                            renameFolderName = folder.name
+                                            renameFolderEmoji = folder.emoji
+                                            showRenameFolderAlert = true
+                                        } label: {
+                                            Label(selectedLanguage == .russian ? "Переименовать" : "Rename", systemImage: "pencil")
+                                        }
+                                        
                                         Button(role: .destructive) {
                                             viewModel.deleteFolder(folder)
                                         } label: {
@@ -342,14 +366,33 @@ struct SidebarView: View {
             }
             .presentationDetents([.medium])
         }
+        // CREATE FOLDER ALERT
         .alert(selectedLanguage == .russian ? "Новая папка" : "New Folder", isPresented: $showCreateFolderAlert) {
             TextField(selectedLanguage == .russian ? "Название" : "Name", text: $newFolderName)
-            TextField("Emoji", text: $newFolderEmoji)
+            TextField("Emoji", text: Binding(
+                get: { newFolderEmoji },
+                set: { newFolderEmoji = filterEmojiInput($0) }
+            ))
             Button(selectedLanguage == .russian ? "Отмена" : "Cancel", role: .cancel) { }
             Button(selectedLanguage == .russian ? "Создать" : "Create") {
                 viewModel.createFolder(name: newFolderName, emoji: newFolderEmoji.isEmpty ? "📁" : newFolderEmoji)
             }
         }
+        // RENAME FOLDER ALERT
+        .alert(selectedLanguage == .russian ? "Переименовать папку" : "Rename Folder", isPresented: $showRenameFolderAlert) {
+            TextField(selectedLanguage == .russian ? "Название" : "Name", text: $renameFolderName)
+            TextField("Emoji", text: Binding(
+                get: { renameFolderEmoji },
+                set: { renameFolderEmoji = filterEmojiInput($0) }
+            ))
+            Button(selectedLanguage == .russian ? "Отмена" : "Cancel", role: .cancel) { }
+            Button(selectedLanguage == .russian ? "Сохранить" : "Save") {
+                if let folder = folderToRename {
+                    viewModel.renameFolder(folder, newName: renameFolderName, newEmoji: renameFolderEmoji.isEmpty ? "📁" : renameFolderEmoji)
+                }
+            }
+        }
+        // RENAME CHAT ALERT
         .alert(selectedLanguage == .russian ? "Переименовать чат" : "Rename Chat", isPresented: $showRenameAlert) {
             TextField(selectedLanguage == .russian ? "Название" : "Name", text: $newTitleInput)
             Button(selectedLanguage == .russian ? "Отмена" : "Cancel", role: .cancel) { }
