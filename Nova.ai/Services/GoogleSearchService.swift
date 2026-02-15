@@ -10,13 +10,26 @@ struct GoogleSearchItem: Decodable, Sendable {
     let snippet: String
 }
 
+enum GoogleSearchServiceError: LocalizedError {
+    case missingConfiguration
+
+    var errorDescription: String? {
+        switch self {
+        case .missingConfiguration:
+            return "Google Search is not configured. Set GOOGLE_SEARCH_API_KEY and GOOGLE_SEARCH_ENGINE_ID."
+        }
+    }
+}
+
 struct GoogleSearchService {
-    // Keys provided by user
-    private let apiKey = "AIzaSyAgNw2QRNZeNDD0-116xbn4HkPKtWPBQwI"
-    private let searchEngineId = "565c9e7161e764c11"
     private let baseURL = "https://www.googleapis.com/customsearch/v1"
     
     func search(query: String) async throws -> String {
+        guard let apiKey = AppSecrets.googleSearchAPIKey,
+              let searchEngineId = AppSecrets.googleSearchEngineID else {
+            throw GoogleSearchServiceError.missingConfiguration
+        }
+
         guard let encodedQuery = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) else {
             throw URLError(.badURL)
         }

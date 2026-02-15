@@ -12,14 +12,28 @@ struct TavilyResult: Codable {
     let score: Double?
 }
 
+enum TavilySearchServiceError: LocalizedError {
+    case missingConfiguration
+
+    var errorDescription: String? {
+        switch self {
+        case .missingConfiguration:
+            return "Tavily search is not configured. Set TAVILY_API_KEY."
+        }
+    }
+}
+
 class TavilySearchService {
     static let shared = TavilySearchService()
-    private let apiKey = "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"
     
     private init() {}
 
     // Функция поиска, возвращающая структурированные результаты
     func search(query: String) async throws -> [TavilyResult] {
+        guard let apiKey = AppSecrets.tavilyAPIKey else {
+            throw TavilySearchServiceError.missingConfiguration
+        }
+
         guard let url = URL(string: "https://api.tavily.com/search") else { return [] }
         
         let body: [String: Any] = [

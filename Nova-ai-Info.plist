@@ -15,5 +15,11 @@
 			</array>
 		</dict>
 	</array>
+	<key>GOOGLE_SEARCH_API_KEY</key>
+	<string>REPLACE_WITH_GOOGLE_SEARCH_API_KEY</string>
+	<key>GOOGLE_SEARCH_ENGINE_ID</key>
+	<string>REPLACE_WITH_GOOGLE_SEARCH_ENGINE_ID</string>
+	<key>TAVILY_API_KEY</key>
+	<string>REPLACE_WITH_TAVILY_API_KEY</string>
 </dict>
 </plist>

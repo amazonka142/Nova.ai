@@ -4,6 +4,7 @@
 # Local env files
 .env
 backend/.env
+Nova.ai/GoogleService-Info.plist
 
 # Python backend artifacts
 backend/.venv/

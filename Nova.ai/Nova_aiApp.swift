@@ -31,7 +31,14 @@ class AppDelegate: NSObject, UIApplicationDelegate {
     let providerFactory = NovaAppCheckProviderFactory()
     AppCheck.setAppCheckProviderFactory(providerFactory)
     
-    FirebaseApp.configure()
+    if let configPath = Bundle.main.path(forResource: "GoogleService-Info", ofType: "plist"),
+       let options = FirebaseOptions(contentsOfFile: configPath) {
+      FirebaseApp.configure(options: options)
+    } else {
+      #if DEBUG
+      print("Firebase is not configured. Add Nova.ai/GoogleService-Info.plist locally to enable Firebase features.")
+      #endif
+    }
     return true
   }
 }
