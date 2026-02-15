@@ -1,4 +1,6 @@
 import SwiftUI
+import Foundation
+import ZIPFoundation
 import Combine
 import SwiftData
 import PhotosUI
@@ -16,8 +18,8 @@ import UIKit
 
 @MainActor
 final class ChatViewModel: ObservableObject {
-    static let appVersion = "1.2026.009"
-    static let buildNumber = "8506"
+    static let appVersion = "1.2026.012"
+    static let buildNumber = "8512"
     
     enum ChatTool: String, CaseIterable, Identifiable {
         case none
@@ -65,8 +67,23 @@ final class ChatViewModel: ObservableObject {
         let type: String
         let content: String
     }
+    
+    enum KnowledgeBaseError: LocalizedError {
+        case limitReached(limit: Int)
+        case maxOnly
+        
+        var errorDescription: String? {
+            switch self {
+            case .limitReached(let limit):
+                return "Достигнут лимит файлов (\(limit))."
+            case .maxOnly:
+                return "База знаний доступна только в Nova Max."
+            }
+        }
+    }
 
     @Published var currentSession: ChatSession
+    @Published var currentProject: Project?
     // History is now managed by SwiftData @Query in the View
     
     // Auth State
@@ -118,11 +135,16 @@ final class ChatViewModel: ObservableObject {
     @Published var showCongratulation: Bool = false
     @Published var purchasedPlan: String? = nil
     let dailyLimit = 50
+    private let maxFileSizeBytes = 5 * 1024 * 1024
+    private let maxFileTextChars = 100_000
+    private let maxKnowledgeChars = 20_000
+    private let maxFirestoreContentChars = 200_000
+    private let currentProjectIdKey = "current_project_id"
     
     // Deep Research State
     @Published var researchStates: [UUID: ResearchSessionData] = [:] {
         didSet {
-            saveResearchStates()
+            scheduleResearchStateSave()
         }
     }
     @Published var selectedReport: ResearchReport?
@@ -140,6 +162,8 @@ final class ChatViewModel: ObservableObject {
     private let storage = Storage.storage()
     private var usageListener: ListenerRegistration?
     private var networkTimeOffset: TimeInterval?
+    private var researchSaveWorkItem: DispatchWorkItem?
+    private let researchSaveDelay: TimeInterval = 0.75
     
     // Available Models
     struct ModelOption: Identifiable, Hashable {
@@ -177,8 +201,9 @@ final class ChatViewModel: ObservableObject {
         self.modelContext = context
         
         // Start with a temporary session that will be replaced when context is set.
-        let newSession = ChatSession(title: "Loading...", model: "gemini-fast")
+        let newSession = ChatSession(title: "Loading...", model: "gemini-fast", project: nil)
         self.currentSession = newSession
+        self.currentProject = nil
         self.loadResearchStates()
         self.checkForUpdates()
         
@@ -200,10 +225,8 @@ final class ChatViewModel: ObservableObject {
     
     func setContext(_ context: ModelContext) {
         self.modelContext = context
-        
-        // Всегда начинаем с чистого листа (Welcome Screen).
-        // Создаем сессию в памяти, но НЕ вставляем её в контекст, пока пользователь не напишет сообщение.
-        self.currentSession = ChatSession(title: "New Chat", model: self.selectedModel)
+
+        initializeProjects()
     }
     
     func speakMessage(_ text: String) {
@@ -242,9 +265,7 @@ final class ChatViewModel: ObservableObject {
     
     private func startRecording() {
         if audioEngine.isRunning {
-            audioEngine.stop()
-            recognitionRequest?.endAudio()
-            isRecording = false
+            stopRecording()
             return
         }
         
@@ -374,26 +395,10 @@ final class ChatViewModel: ObservableObject {
         let gotAccess = url.startAccessingSecurityScopedResource()
         defer { if gotAccess { url.stopAccessingSecurityScopedResource() } }
         
-        var fileContent = ""
-        
-        // Simple extraction logic
-        if url.pathExtension.lowercased() == "pdf" {
-            if let pdf = PDFDocument(url: url) {
-                fileContent = pdf.string ?? ""
-            }
-        } else {
-            // Try reading as plain text
-            if let text = try? String(contentsOf: url, encoding: .utf8) {
-                fileContent = text
-            }
-        }
-        
-        if !fileContent.isEmpty {
-            let fileName = url.lastPathComponent
-            let fileType = url.pathExtension.uppercased()
-            self.pendingFileAttachment = AttachmentItem(name: fileName, type: fileType.isEmpty ? "TXT" : fileType, content: fileContent)
-        } else {
-            self.errorMessage = "Не удалось прочитать текст из файла. Возможно, формат не поддерживается или файл защищен."
+        do {
+            self.pendingFileAttachment = try readAttachmentItem(url: url)
+        } catch {
+            self.errorMessage = error.localizedDescription
         }
     }
     
@@ -436,6 +441,9 @@ final class ChatViewModel: ObservableObject {
         
         // Если это первое сообщение в новой сессии (черновик), регистрируем её в SwiftData
         if currentSession.modelContext == nil {
+            if currentSession.project == nil {
+                currentSession.project = currentProject
+            }
             modelContext?.insert(currentSession)
         }
         
@@ -486,11 +494,13 @@ final class ChatViewModel: ObservableObject {
         
         // Reset Inputs
         let inputToSend = inputText
+        let sessionForMemory = currentSession
+        let projectForMemory = currentProject
         self.smartSuggestions = [] // Очищаем старые подсказки
         
         // 2. В ЭТО ЖЕ ВРЕМЯ (в фоне) запускаем шпиона-аналитика
         Task(priority: .userInitiated) {
-            await analyzeForMemory(userMessage: inputToSend)
+            await analyzeForMemory(userMessage: inputToSend, in: sessionForMemory, project: projectForMemory)
         }
         
         inputText = ""
@@ -514,17 +524,21 @@ final class ChatViewModel: ObservableObject {
             do {
                 var contextMessages: [Message] = []
                 
-                var effectiveSystemPrompt = constructPersonalizedSystemPrompt()
+                var effectiveSystemPrompt = buildEffectiveSystemPrompt()
                 var modelToSend = selectedModel
                 
-                if selectedModel == "nova-rp" {
+                if activeTool == .reasoning {
+                    modelToSend = "deepthink"
+                }
+                
+                if modelToSend == "deepthink" {
+                    effectiveSystemPrompt = "You are a deep thinking AI. Use Chain of Thought reasoning. Explain your steps."
+                } else if selectedModel == "nova-rp" {
                     modelToSend = "deepseek"
                     effectiveSystemPrompt = "You are Nova-v1-RP. Engage in a detailed and immersive roleplay. Adopt the persona requested by the user or implied by the context. Do not break character. Be descriptive."
                 }
                 
-                if activeTool == .reasoning || modelToSend == "deepthink" {
-                    effectiveSystemPrompt = "You are a deep thinking AI. Use Chain of Thought reasoning. Explain your steps."
-                }
+                effectiveSystemPrompt = appendKnowledgeBase(to: effectiveSystemPrompt)
                 
                 contextMessages.append(Message(role: .system, content: effectiveSystemPrompt))
                 
@@ -610,12 +624,17 @@ final class ChatViewModel: ObservableObject {
         
         // Если это первое сообщение в новой сессии (черновик), регистрируем её в SwiftData
         if currentSession.modelContext == nil {
+            if currentSession.project == nil {
+                currentSession.project = currentProject
+            }
             modelContext?.insert(currentSession)
         }
         
         // Background Memory Analysis
+        let sessionForMemory = currentSession
+        let projectForMemory = currentProject
         Task(priority: .userInitiated) {
-            await analyzeForMemory(userMessage: cleanText)
+            await analyzeForMemory(userMessage: cleanText, in: sessionForMemory, project: projectForMemory)
         }
         
         // 2. Save User Message
@@ -631,13 +650,15 @@ final class ChatViewModel: ObservableObject {
         // 3. Prepare Context
         var contextMessages: [Message] = []
         
-        var effectiveSystemPrompt = constructPersonalizedSystemPrompt()
+        var effectiveSystemPrompt = buildEffectiveSystemPrompt()
         var modelToSend = selectedModel
         
         if selectedModel == "nova-rp" {
             modelToSend = "deepseek"
             effectiveSystemPrompt = "You are Nova-v1-RP. Engage in a detailed and immersive roleplay. Adopt the persona requested by the user or implied by the context. Do not break character. Be descriptive."
         }
+        
+        effectiveSystemPrompt = appendKnowledgeBase(to: effectiveSystemPrompt)
         
         contextMessages.append(Message(role: .system, content: effectiveSystemPrompt))
         
@@ -694,8 +715,24 @@ final class ChatViewModel: ObservableObject {
         return 10
     }
     
-    private func saveMemory(_ text: String) -> Bool {
-        var memories = UserDefaults.standard.stringArray(forKey: "ai_memories") ?? []
+    private func memoryKey(for project: Project?) -> String {
+        guard let project = project else { return "ai_memories" }
+        if project.memoryScope == .projectOnly {
+            return "ai_memories_project_\(project.id.uuidString)"
+        }
+        return "ai_memories"
+    }
+    
+    private func loadMemories(for project: Project?) -> [String] {
+        UserDefaults.standard.stringArray(forKey: memoryKey(for: project)) ?? []
+    }
+    
+    private func saveMemories(_ memories: [String], for project: Project?) {
+        UserDefaults.standard.set(memories, forKey: memoryKey(for: project))
+    }
+    
+    private func saveMemory(_ text: String, for project: Project?) -> Bool {
+        var memories = loadMemories(for: project)
         
         if memories.contains(text) { return true }
         
@@ -703,14 +740,15 @@ final class ChatViewModel: ObservableObject {
             return false
         }
         memories.append(text)
-        UserDefaults.standard.set(memories, forKey: "ai_memories")
+        saveMemories(memories, for: project)
         return true
     }
     
-    private func analyzeForMemory(userMessage: String) async {
+    private func analyzeForMemory(userMessage: String, in session: ChatSession, project: Project?) async {
         NSLog("🚀 [Memory] Запуск фонового анализа для: '\(userMessage)'")
         
-        let existingMemories = UserDefaults.standard.stringArray(forKey: "ai_memories") ?? []
+        let targetProject = project
+        let existingMemories = loadMemories(for: targetProject)
         let memoriesContext = existingMemories.isEmpty ? "Нет известных фактов" : existingMemories.joined(separator: "; ")
         
         let systemInstruction = """
@@ -748,16 +786,16 @@ final class ChatViewModel: ObservableObject {
             
             if fact.uppercased() != "NO" && !fact.isEmpty && fact.count < 200 {
                 NSLog("🕵️‍♂️ Gemini Flash нашел факт: \(fact)")
-                if self.saveMemory(fact) {
+                if self.saveMemory(fact, for: targetProject) {
                     let sysMsg = Message(role: .system, content: "💾 Запомнил: \(fact)")
-                    self.currentSession.messages.append(sysMsg)
-                    self.syncMessageToFirestore(sysMsg, session: self.currentSession)
+                    session.messages.append(sysMsg)
+                    self.syncMessageToFirestore(sysMsg, session: session)
                     self.saveContext()
                 } else {
                     let limit = self.memoryLimit
                     let upsellMsg = Message(role: .assistant, content: "🧠 *Я заметил важный факт ('\(fact)'), но у меня переполнена память (\(limit)/\(limit)). В бесплатной версии я могу помнить только \(limit) фактов. Обновись до Pro, чтобы расширить мне мозг!*")
-                    self.currentSession.messages.append(upsellMsg)
-                    self.syncMessageToFirestore(upsellMsg, session: self.currentSession)
+                    session.messages.append(upsellMsg)
+                    self.syncMessageToFirestore(upsellMsg, session: session)
                     self.saveContext()
                 }
             }
@@ -849,7 +887,7 @@ final class ChatViewModel: ObservableObject {
         let nickname = defaults.string(forKey: "user_nickname") ?? ""
         let profession = defaults.string(forKey: "user_profession") ?? ""
         let interests = defaults.string(forKey: "user_interests") ?? ""
-        let memories = defaults.stringArray(forKey: "ai_memories") ?? []
+        let memories = loadMemories(for: currentProject)
         
         // --- БЛОК 1: ЛИЧНОСТЬ И ТОН ---
         var personalityTraits: [String] = []
@@ -923,9 +961,42 @@ final class ChatViewModel: ObservableObject {
         return masterPrompt
     }
     
+    private func buildEffectiveSystemPrompt() -> String {
+        var prompt = constructPersonalizedSystemPrompt()
+        
+        if isMax, let projectPrompt = currentProject?.customSystemPrompt {
+            let trimmed = projectPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                prompt = trimmed
+            }
+        }
+        return prompt
+    }
+    
+    private func buildKnowledgeBaseContext() -> String? {
+        guard isMax, let project = currentProject, !project.knowledgeBase.isEmpty else { return nil }
+        var context = "[PROJECT KNOWLEDGE BASE]\n"
+        let limit = knowledgeFileLimit
+        for file in project.knowledgeBase.prefix(limit) {
+            context += "FILE: \(file.name)\n"
+            context += file.content
+            context += "\n\n"
+        }
+        if context.count > maxKnowledgeChars {
+            context = String(context.prefix(maxKnowledgeChars)) + "\n[TRUNCATED]"
+        }
+        return context
+    }
+    
+    private func appendKnowledgeBase(to prompt: String) -> String {
+        guard let knowledgeContext = buildKnowledgeBaseContext() else { return prompt }
+        return prompt + "\n\n" + knowledgeContext
+    }
+    
     private func performWebSearch(query: String) {
         let userMessage = Message(role: .user, content: "🔍 Поиск: \(query)")
         currentSession.messages.append(userMessage)
+        currentSession.lastModified = Date()
         syncMessageToFirestore(userMessage, session: currentSession)
         syncSessionToFirestore(currentSession)
         
@@ -955,7 +1026,7 @@ final class ChatViewModel: ObservableObject {
                 var apiMessages: [API_Message] = []
                 
                 // 1. System Prompt
-                apiMessages.append(API_Message(role: "system", content: constructPersonalizedSystemPrompt(), imageData: nil))
+                apiMessages.append(API_Message(role: "system", content: appendKnowledgeBase(to: buildEffectiveSystemPrompt()), imageData: nil))
                 
                 // 2. History (excluding the last message which is the "🔍 Поиск: ..." marker)
                 // Strict Focus Logic: If enabled, skip history
@@ -976,8 +1047,10 @@ final class ChatViewModel: ObservableObject {
                     aiMessage.content += chunk
                 }
                 
+                currentSession.lastModified = Date()
                 saveContext()
                 syncMessageToFirestore(aiMessage, session: currentSession)
+                syncSessionToFirestore(currentSession)
                 
             } catch {
                 errorMessage = "Search failed: \(error.localizedDescription)"
@@ -990,6 +1063,7 @@ final class ChatViewModel: ObservableObject {
     private func performImageGeneration(prompt: String) {
         let userMessage = Message(role: .user, content: "🎨 Нарисуй: \(prompt)")
         currentSession.messages.append(userMessage)
+        currentSession.lastModified = Date()
         syncMessageToFirestore(userMessage, session: currentSession)
         syncSessionToFirestore(currentSession)
         
@@ -1001,7 +1075,11 @@ final class ChatViewModel: ObservableObject {
             do {
                 // Pollinations Flux URL
                 // Using Flux model, 1024x1024, no logo
-                let encodedPrompt = promptToSend.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? promptToSend
+                let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-._~"))
+                let encodedPrompt = promptToSend.addingPercentEncoding(withAllowedCharacters: allowed)
+                    ?? promptToSend.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)
+                    ?? ""
+                guard !encodedPrompt.isEmpty else { throw URLError(.badURL) }
                 let urlString = "https://image.pollinations.ai/prompt/\(encodedPrompt)?model=flux&width=1024&height=1024&nologo=true"
                 
                 guard let url = URL(string: urlString) else { throw URLError(.badURL) }
@@ -1010,8 +1088,10 @@ final class ChatViewModel: ObservableObject {
                 
                 let aiMessage = Message(role: .assistant, content: "Изображение по запросу: \(promptToSend)", type: .image, imageData: data)
                 currentSession.messages.append(aiMessage)
+                currentSession.lastModified = Date()
                 saveContext()
                 syncMessageToFirestore(aiMessage, session: currentSession)
+                syncSessionToFirestore(currentSession)
             } catch {
                 errorMessage = "Не удалось создать изображение: \(error.localizedDescription)"
             }
@@ -1027,8 +1107,10 @@ final class ChatViewModel: ObservableObject {
         
         currentSession.messages.append(userMessage)
         currentSession.messages.append(aiMessage)
+        currentSession.lastModified = Date()
         
         syncMessageToFirestore(userMessage, session: currentSession)
+        syncSessionToFirestore(currentSession)
         // syncMessageToFirestore(aiMessage) - сохраним позже
         
         // Инициализируем состояние исследования
@@ -1135,19 +1217,26 @@ final class ChatViewModel: ObservableObject {
             UIApplication.shared.endBackgroundTask(backgroundTask)
             backgroundTask = .invalid
         }
+        let backgroundTaskId = backgroundTask
         
-        Task {
+        let query = data.query
+        let planSteps = data.planSteps
+        let chatService = self.chatService
+        
+        Task.detached(priority: .userInitiated) { [weak self] in
+            guard let self = self else { return }
             defer {
-                if backgroundTask != .invalid {
-                    UIApplication.shared.endBackgroundTask(backgroundTask)
-                    backgroundTask = .invalid
+                Task { @MainActor in
+                    if backgroundTaskId != .invalid {
+                        UIApplication.shared.endBackgroundTask(backgroundTaskId)
+                    }
                 }
             }
             
             do {
                 var gatheredKnowledge = ""
                 var fullRawContext = ""
-                var searchQueries = data.planSteps.isEmpty ? [data.query] : data.planSteps // Используем план как начальные запросы
+                var searchQueries = planSteps.isEmpty ? [query] : planSteps // Используем план как начальные запросы
                 
                 // Sanitize queries: split by newlines if any, remove numbering
                 searchQueries = searchQueries.flatMap { $0.components(separatedBy: .newlines) }
@@ -1165,25 +1254,25 @@ final class ChatViewModel: ObservableObject {
                     if currentQueries.isEmpty && iteration > 1 { break } // Если запросов нет и это не первый проход
                     
                     await MainActor.run {
-                        var current = researchStates[messageId]!
+                        guard var current = self.researchStates[messageId] else { return }
                         current.currentAction = "Цикл \(iteration)/\(maxIterations): Поиск и анализ данных..."
                         current.logs.append("🔍 Итерация \(iteration): Tavily поиск по \(currentQueries.count) запросам")
                         // Прогресс: 0..0.8 распределяем по итерациям
                         current.progress = Double(iteration - 1) / Double(maxIterations) * 0.8
-                        researchStates[messageId] = current
+                        self.researchStates[messageId] = current
                     }
                     
                     var batchContent = ""
                     
                     // Параллельный поиск через Tavily
                     await withTaskGroup(of: [TavilyResult]?.self) { group in
-                        for query in currentQueries {
-                            guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+                        for searchQuery in currentQueries {
+                            guard !searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
                             group.addTask {
                                 do {
-                                    return try await TavilySearchService.shared.search(query: query)
+                                    return try await TavilySearchService.shared.search(query: searchQuery)
                                 } catch {
-                                    print("Tavily search failed for \(query): \(error)")
+                                    print("Tavily search failed for \(searchQuery): \(error)")
                                     return nil
                                 }
                             }
@@ -1205,14 +1294,14 @@ final class ChatViewModel: ObservableObject {
                                 
                                 // Обновляем UI источниками
                                 await MainActor.run {
-                                    var current = researchStates[messageId]!
+                                    guard var current = self.researchStates[messageId] else { return }
                                     for result in results {
                                         // Простая дедупликация по URL
                                         if !current.sources.contains(where: { $0.url == result.url }) {
                                             current.sources.append(ResearchSource(title: result.title, url: result.url, icon: "globe"))
                                         }
                                     }
-                                    researchStates[messageId] = current
+                                    self.researchStates[messageId] = current
                                 }
                             }
                         }
@@ -1220,9 +1309,9 @@ final class ChatViewModel: ObservableObject {
                     
                     if batchContent.isEmpty {
                         await MainActor.run {
-                            var current = researchStates[messageId]!
+                            guard var current = self.researchStates[messageId] else { return }
                             current.logs.append("⚠️ Данные не найдены, переход к анализу.")
-                            researchStates[messageId] = current
+                            self.researchStates[messageId] = current
                         }
                         if iteration == 1 { break } // Если сразу ничего нет, выходим
                         continue
@@ -1232,9 +1321,9 @@ final class ChatViewModel: ObservableObject {
                     
                     // --- ШАГ 3: МЫСЛИ (Chain of Thought) ---
                     await MainActor.run {
-                        var current = researchStates[messageId]!
+                        guard var current = self.researchStates[messageId] else { return }
                         current.currentAction = "Анализ и планирование..."
-                        researchStates[messageId] = current
+                        self.researchStates[messageId] = current
                     }
                     
                     let analysisStartTime = Date()
@@ -1242,7 +1331,7 @@ final class ChatViewModel: ObservableObject {
                     let thinkPrompt = """
                     Ты — аналитический модуль Deep Research.
                     Твоя задача — определить, достаточно ли информации для ПОЛНОГО ответа на запрос пользователя.
-                    ТЕКУЩАЯ ЗАДАЧА: "\(data.query)"
+                    ТЕКУЩАЯ ЗАДАЧА: "\(query)"
                     УЖЕ ИЗВЕСТНО:
                     \(gatheredKnowledge.prefix(2000))
                     
@@ -1293,20 +1382,20 @@ final class ChatViewModel: ObservableObject {
                     searchQueries.append(contentsOf: newQueries)
                     
                     await MainActor.run {
-                        var current = researchStates[messageId]!
+                        guard var current = self.researchStates[messageId] else { return }
                         current.logs.append("🧠 Мысли: \(newFacts.prefix(100))...")
                         if !newQueries.isEmpty {
                             current.logs.append("🆕 Новые векторы: \(newQueries.joined(separator: ", "))")
                         }
-                        researchStates[messageId] = current
+                        self.researchStates[messageId] = current
                     }
                     
                     // Умная остановка: Если ИИ не предложил новых запросов (NONE), значит информации достаточно
                     if newQueries.isEmpty {
                         await MainActor.run {
-                            var current = researchStates[messageId]!
+                            guard var current = self.researchStates[messageId] else { return }
                             current.logs.append("✅ Информации достаточно. Завершение поиска.")
-                            researchStates[messageId] = current
+                            self.researchStates[messageId] = current
                         }
                         break
                     }
@@ -1314,10 +1403,10 @@ final class ChatViewModel: ObservableObject {
                 
                 // --- ШАГ 4: ФИНАЛЬНЫЙ ОТЧЕТ ---
                 await MainActor.run {
-                    var current = researchStates[messageId]!
+                    guard var current = self.researchStates[messageId] else { return }
                     current.currentAction = "Написание отчета..."
                     current.progress = 0.9
-                    researchStates[messageId] = current
+                    self.researchStates[messageId] = current
                 }
                 
                 let finalPrompt = """
@@ -1325,7 +1414,7 @@ final class ChatViewModel: ObservableObject {
                 \(fullRawContext)
                 [END DATA]
                 
-                User Request: \(data.query)
+                User Request: \(query)
                 
                 TASK:
                 Write a comprehensive, academic-level research report (approx. 3-5 pages equivalent) based on the gathered context.
@@ -1348,40 +1437,42 @@ final class ChatViewModel: ObservableObject {
                 let reportContent = try await chatService.sendMessage(reportMessages, model: "deepseek") // Умная модель
                 
                 await MainActor.run {
-                    var current = researchStates[messageId]!
+                    guard var current = self.researchStates[messageId] else { return }
                     current.state = .completed
                     current.progress = 1.0
                     current.currentAction = "Готово"
                     
                     current.report = ResearchReport(
-                        title: "Отчет: \(data.query)",
+                        title: "Отчет: \(query)",
                         abstract: "Глубокое исследование на основе \(current.sources.count) источников. Проведен многоступенчатый анализ данных с использованием Tavily API.",
                         content: reportContent,
                         sources: current.sources
                     )
                     
-                    researchStates[messageId] = current
+                    self.researchStates[messageId] = current
                     
                     // Обновляем сообщение в чате
-                    if let idx = currentSession.messages.firstIndex(where: { $0.id == messageId }) {
-                        currentSession.messages[idx].content = "[RESEARCH_COMPLETED]"
-                        saveContext()
+                    if let idx = self.currentSession.messages.firstIndex(where: { $0.id == messageId }) {
+                        self.currentSession.messages[idx].content = "[RESEARCH_COMPLETED]"
+                        self.saveContext()
                     }
                     
                     let followUpMessage = Message(role: .assistant, content: "Исследование завершено. Вы можете задать по нему вопросы или попросить меня что-то изменить.")
                     self.currentSession.messages.append(followUpMessage)
                     self.syncMessageToFirestore(followUpMessage, session: self.currentSession)
+                    self.currentSession.lastModified = Date()
+                    self.syncSessionToFirestore(self.currentSession)
                     self.saveContext()
                     
-                    self.sendCompletionNotification(title: "Deep Research завершен", body: "Отчет по теме \"\(data.query)\" готов.")
+                    self.sendCompletionNotification(title: "Deep Research завершен", body: "Отчет по теме \"\(query)\" готов.")
                 }
                 
             } catch {
                 await MainActor.run {
-                    var current = researchStates[messageId]!
+                    guard var current = self.researchStates[messageId] else { return }
                     current.logs.append("Ошибка: \(error.localizedDescription)")
                     current.currentAction = "Сбой исследования"
-                    researchStates[messageId] = current
+                    self.researchStates[messageId] = current
                     
                     self.sendCompletionNotification(title: "Deep Research прерван", body: "Произошла ошибка: \(error.localizedDescription)")
                 }
@@ -1399,21 +1490,328 @@ final class ChatViewModel: ObservableObject {
         UNUserNotificationCenter.current().add(request)
     }
     
+    private var researchStatesFileURL: URL? {
+        guard let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
+            return nil
+        }
+        let dir = base.appendingPathComponent("NovaAI", isDirectory: true)
+        return dir.appendingPathComponent("researchStates.json")
+    }
+    
+    private func scheduleResearchStateSave() {
+        researchSaveWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.saveResearchStates()
+        }
+        researchSaveWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + researchSaveDelay, execute: workItem)
+    }
+    
     private func saveResearchStates() {
-        if let encoded = try? JSONEncoder().encode(researchStates) {
-            UserDefaults.standard.set(encoded, forKey: "researchStates")
+        let states = researchStates
+        guard let url = researchStatesFileURL else { return }
+        
+        Task.detached {
+            do {
+                let data = try JSONEncoder().encode(states)
+                let dir = url.deletingLastPathComponent()
+                try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+                try data.write(to: url, options: [.atomic])
+            } catch {
+                NSLog("Failed to save research states: \(error)")
+            }
         }
     }
     
     private func loadResearchStates() {
+        if let url = researchStatesFileURL,
+           let data = try? Data(contentsOf: url),
+           let decoded = try? JSONDecoder().decode([UUID: ResearchSessionData].self, from: data) {
+            self.researchStates = decoded
+            return
+        }
+        
         if let data = UserDefaults.standard.data(forKey: "researchStates"),
            let decoded = try? JSONDecoder().decode([UUID: ResearchSessionData].self, from: data) {
             self.researchStates = decoded
         }
     }
     
+    // MARK: - Project Management
+    
+    private var userPlan: UserPlan {
+        if isMax { return .max }
+        if isPro { return .pro }
+        return .free
+    }
+    
+    var knowledgeFileLimit: Int {
+        switch userPlan {
+        case .free: return 3
+        case .pro: return 10
+        case .max: return 20
+        }
+    }
+    
+    private func initializeProjects() {
+        guard let context = modelContext else { return }
+        let manager = ProjectManager(context: context)
+        do {
+            let fallbackProject = try manager.ensureDefaultProject()
+            normalizeProjectsIfNeeded()
+            assignOrphanSessions(to: fallbackProject)
+            
+            if let savedId = UserDefaults.standard.string(forKey: currentProjectIdKey),
+               let uuid = UUID(uuidString: savedId),
+               let savedProject = fetchProject(by: uuid) {
+                selectProject(savedProject)
+            } else {
+                selectProject(fallbackProject)
+            }
+        } catch {
+            errorMessage = "Не удалось подготовить проекты: \(error.localizedDescription)"
+            if let firstProject = fetchFirstProject() {
+                selectProject(firstProject)
+            } else {
+                let tempProject = Project(name: "Внешние чаты", icon: "📝", themeColor: .blue, memoryScope: .shared)
+                currentProject = tempProject
+                currentSession = ChatSession(title: "New Chat", model: selectedModel, project: tempProject)
+            }
+        }
+    }
+
+    private func fetchFirstProject() -> Project? {
+        guard let context = modelContext else { return nil }
+        let descriptor = FetchDescriptor<Project>(sortBy: [SortDescriptor(\Project.createdAt, order: .forward)])
+        return (try? context.fetch(descriptor))?.first
+    }
+    
+    private func normalizeProjectsIfNeeded() {
+        guard let context = modelContext else { return }
+        let descriptor = FetchDescriptor<Project>()
+        guard let projects = try? context.fetch(descriptor) else { return }
+        
+        var didChange = false
+        for project in projects {
+            if project.memoryScopeRaw == nil || ProjectMemoryScope(rawValue: project.memoryScopeRaw ?? "") == nil {
+                project.memoryScope = .shared
+                didChange = true
+            }
+            if project.name == "Черновик" && project.icon == "📝" {
+                project.name = "Внешние чаты"
+                didChange = true
+            }
+        }
+        if didChange {
+            try? context.save()
+        }
+    }
+    
+    private func assignOrphanSessions(to project: Project) {
+        guard let context = modelContext else { return }
+        let descriptor = FetchDescriptor<ChatSession>()
+        if let sessions = try? context.fetch(descriptor) {
+            let orphaned = sessions.filter { $0.project == nil }
+            if !orphaned.isEmpty {
+                orphaned.forEach { $0.project = project }
+                saveContext()
+            }
+        }
+    }
+    
+    private func fetchProject(by id: UUID) -> Project? {
+        guard let context = modelContext else { return nil }
+        let descriptor = FetchDescriptor<Project>()
+        if let projects = try? context.fetch(descriptor) {
+            return projects.first(where: { $0.id == id })
+        }
+        return nil
+    }
+    
+    private func mostRecentSession(for project: Project) -> ChatSession? {
+        guard let context = modelContext else { return nil }
+        let descriptor = FetchDescriptor<ChatSession>(sortBy: [SortDescriptor(\.lastModified, order: .reverse)])
+        if let sessions = try? context.fetch(descriptor) {
+            return sessions.first(where: { $0.project?.id == project.id })
+        }
+        return nil
+    }
+    
+    func selectProject(_ project: Project) {
+        currentProject = project
+        UserDefaults.standard.set(project.id.uuidString, forKey: currentProjectIdKey)
+        
+        if let session = mostRecentSession(for: project) {
+            currentSession = session
+        } else {
+            let newSession = ChatSession(title: "New Chat", model: selectedModel, project: project)
+            currentSession = newSession
+        }
+        isSidebarVisible = false
+    }
+    
+    func createProject(name: String, icon: String, themeColor: Color, memoryScope: ProjectMemoryScope) throws -> Project {
+        guard let context = modelContext else { throw ProjectManagerError.limitReached }
+        let manager = ProjectManager(context: context)
+        let project = try manager.createProject(name: name, icon: icon, themeColor: themeColor, memoryScope: memoryScope, plan: userPlan)
+        selectProject(project)
+        return project
+    }
+    
+    func updateProject(_ project: Project, name: String, icon: String, themeColor: Color) {
+        project.name = name
+        project.icon = icon
+        project.themeColor = themeColor
+        saveContext()
+    }
+    
+    func addKnowledgeFile(to project: Project, url: URL) -> Result<ProjectFile, Error> {
+        do {
+            guard isMax else {
+                return .failure(KnowledgeBaseError.maxOnly)
+            }
+            let limit = knowledgeFileLimit
+            if project.knowledgeBase.count >= limit {
+                return .failure(KnowledgeBaseError.limitReached(limit: limit))
+            }
+            let item = try readFileForProject(url: url)
+            let file = ProjectFile(name: item.name, type: item.type, content: item.content)
+            project.knowledgeBase.append(file)
+            saveContext()
+            return .success(file)
+        } catch {
+            return .failure(error)
+        }
+    }
+    
+    func removeKnowledgeFile(_ file: ProjectFile, from project: Project) {
+        if let index = project.knowledgeBase.firstIndex(where: { $0.id == file.id }) {
+            project.knowledgeBase.remove(at: index)
+            saveContext()
+        }
+    }
+    
+    private func readAttachmentItem(url: URL) throws -> AttachmentItem {
+        if let values = try? url.resourceValues(forKeys: [.fileSizeKey]),
+           let fileSize = values.fileSize,
+           fileSize > maxFileSizeBytes {
+            let sizeMb = Double(fileSize) / (1024 * 1024)
+            throw NSError(domain: "ProjectFile", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: String(format: "Файл слишком большой (%.1f MB). Максимум: 5 MB.", sizeMb)
+            ])
+        }
+        
+        var fileContent = try extractTextFromFile(url: url)
+        
+        if fileContent.isEmpty {
+            throw NSError(domain: "ProjectFile", code: 2, userInfo: [
+                NSLocalizedDescriptionKey: "Не удалось прочитать текст из файла."
+            ])
+        }
+        
+        if fileContent.count > maxFileTextChars {
+            let truncated = String(fileContent.prefix(maxFileTextChars))
+            fileContent = truncated + "\n\n[...текст обрезан...]"
+        }
+        
+        let fileName = url.lastPathComponent
+        let fileType = url.pathExtension.uppercased()
+        return AttachmentItem(name: fileName, type: fileType.isEmpty ? "TXT" : fileType, content: fileContent)
+    }
+    
+    private func extractTextFromFile(url: URL) throws -> String {
+        let ext = url.pathExtension.lowercased()
+        
+        if ext == "pdf" {
+            if let pdf = PDFDocument(url: url) {
+                return pdf.string ?? ""
+            }
+            return ""
+        }
+        
+        if ext == "docx" {
+            return try extractTextFromDocx(url: url) ?? ""
+        }
+        
+        if ext == "pptx" {
+            return try extractTextFromPptx(url: url) ?? ""
+        }
+        
+        return (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+    }
+    
+    private func extractTextFromDocx(url: URL) throws -> String? {
+        guard let archive = Archive(url: url, accessMode: .read) else { return nil }
+        guard let xml = try readZipEntryText(archive: archive, path: "word/document.xml") else { return nil }
+        return stripXMLTags(from: xml)
+    }
+    
+    private func extractTextFromPptx(url: URL) throws -> String? {
+        guard let archive = Archive(url: url, accessMode: .read) else { return nil }
+        let slides = archive.filter { entry in
+            entry.path.hasPrefix("ppt/slides/slide") && entry.path.hasSuffix(".xml")
+        }.sorted { $0.path < $1.path }
+        
+        var combined = ""
+        for entry in slides {
+            var data = Data()
+            _ = try archive.extract(entry, consumer: { chunk in
+                data.append(chunk)
+            })
+            if let xml = String(data: data, encoding: .utf8) {
+                combined += xml + "\n"
+            }
+        }
+        if combined.isEmpty { return nil }
+        return stripXMLTags(from: combined)
+    }
+    
+    private func readZipEntryText(archive: Archive, path: String) throws -> String? {
+        guard let entry = archive[path] else { return nil }
+        var data = Data()
+        _ = try archive.extract(entry, consumer: { chunk in
+            data.append(chunk)
+        })
+        return String(data: data, encoding: .utf8)
+    }
+    
+    private func stripXMLTags(from xml: String) -> String {
+        var text = xml
+        text = text.replacingOccurrences(of: "</w:p>", with: "\n", options: .caseInsensitive)
+        text = text.replacingOccurrences(of: "</a:p>", with: "\n", options: .caseInsensitive)
+        text = text.replacingOccurrences(of: "<w:br\\s*/>", with: "\n", options: .regularExpression)
+        text = text.replacingOccurrences(of: "<a:br\\s*/>", with: "\n", options: .regularExpression)
+        
+        if let regex = try? NSRegularExpression(pattern: "<[^>]+>", options: []) {
+            let range = NSRange(text.startIndex..<text.endIndex, in: text)
+            text = regex.stringByReplacingMatches(in: text, options: [], range: range, withTemplate: "")
+        }
+        
+        text = decodeXMLEntities(text)
+        text = text.replacingOccurrences(of: "\\s+\\n", with: "\n", options: .regularExpression)
+        text = text.replacingOccurrences(of: "\\n{3,}", with: "\n\n", options: .regularExpression)
+        return text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    
+    private func decodeXMLEntities(_ text: String) -> String {
+        var result = text
+        result = result.replacingOccurrences(of: "&amp;", with: "&")
+        result = result.replacingOccurrences(of: "&lt;", with: "<")
+        result = result.replacingOccurrences(of: "&gt;", with: ">")
+        result = result.replacingOccurrences(of: "&quot;", with: "\"")
+        result = result.replacingOccurrences(of: "&apos;", with: "'")
+        result = result.replacingOccurrences(of: "&nbsp;", with: " ")
+        return result
+    }
+    
+    private func readFileForProject(url: URL) throws -> AttachmentItem {
+        let gotAccess = url.startAccessingSecurityScopedResource()
+        defer { if gotAccess { url.stopAccessingSecurityScopedResource() } }
+        return try readAttachmentItem(url: url)
+    }
+    
     func createNewSession() {
-        let newSession = ChatSession(title: "New Chat", model: selectedModel)
+        let newSession = ChatSession(title: "New Chat", model: selectedModel, project: currentProject)
         // Мы НЕ вставляем сессию в контекст и НЕ сохраняем в Firestore.
         // Она станет реальной только после отправки первого сообщения (см. sendMessage).
         currentSession = newSession
@@ -1421,6 +1819,10 @@ final class ChatViewModel: ObservableObject {
     }
     
     func selectSession(_ session: ChatSession) {
+        if let project = session.project, project.id != currentProject?.id {
+            currentProject = project
+            UserDefaults.standard.set(project.id.uuidString, forKey: currentProjectIdKey)
+        }
         currentSession = session
         isSidebarVisible = false
     }
@@ -1444,7 +1846,7 @@ final class ChatViewModel: ObservableObject {
         }
         
         if let user = userSession {
-            let safeId = String(describing: session.id).replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: ":", with: "_")
+            let safeId = session.ensureUUID().uuidString
             db.collection("users").document(user.uid).collection("chats").document(safeId).delete()
         }
         
@@ -1493,7 +1895,7 @@ final class ChatViewModel: ObservableObject {
             
             if let user = userSession {
                 for session in sessions {
-                    let safeId = String(describing: session.id).replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: ":", with: "_")
+                    let safeId = session.ensureUUID().uuidString
                     db.collection("users").document(user.uid).collection("chats").document(safeId).delete()
                 }
             }
@@ -1511,6 +1913,10 @@ final class ChatViewModel: ObservableObject {
     private func saveContext() {
         guard let context = modelContext else { return }
         try? context.save()
+    }
+    
+    func persistChanges() {
+        saveContext()
     }
     
     // MARK: - Profile Management
@@ -1622,7 +2028,9 @@ final class ChatViewModel: ObservableObject {
             }
             
             guard let nonce = currentNonce else {
-                fatalError("Invalid state: A login callback was received, but no login request was sent.")
+                errorMessage = "Сбой авторизации: не удалось подтвердить запрос. Попробуйте еще раз."
+                currentNonce = nil
+                return
             }
             
             guard let appleIDToken = appleIDCredential.identityToken else {
@@ -1797,11 +2205,7 @@ final class ChatViewModel: ObservableObject {
                 self.lastRequestDate = date
                 self.lastWeeklyResetDate = (data["lastWeeklyResetDate"] as? Timestamp)?.dateValue()
                 
-                if let date = date, !Calendar.current.isDateInToday(date) {
-                    self.dailyRequestCount = 0
-                } else {
-                    self.dailyRequestCount = count
-                }
+                self.dailyRequestCount = count
             } else {
                 self.dailyRequestCount = 0
                 // Если документа пользователя нет, сбрасываем подписки
@@ -1825,19 +2229,8 @@ final class ChatViewModel: ObservableObject {
             return .locked
         }
         
-        // Reset counters if new day (handled in listener/increment, but double check here)
-        if let lastDate = lastRequestDate, !Calendar.current.isDateInToday(lastDate) {
-            // Logic handled in incrementUsage, but for UI state we assume 0 if date changed
-        }
-        
         let usage = modelUsage[model] ?? 0
-        
-        // Weekly Logic Check
-        // Если это новая неделя, считаем использование равным 0 (для UI), пока не обновится база
-        var weeklyUsage = weeklyModelUsage[model] ?? 0
-        if let lastWeekly = lastWeeklyResetDate, !Calendar.current.isDate(lastWeekly, equalTo: Date(), toGranularity: .weekOfYear) {
-            weeklyUsage = 0
-        }
+        let weeklyUsage = weeklyModelUsage[model] ?? 0
         
         // MAX PLAN
         if isMax {
@@ -1901,33 +2294,15 @@ final class ChatViewModel: ObservableObject {
                 return nil
             }
             
-            var newCount = 1
-            let now = Date()
             var currentModelUsage: [String: Int] = [:]
             var currentWeeklyUsage: [String: Int] = [:]
+            var newCount = 1
             
             if let data = doc.data() {
                 let count = data["dailyRequestCount"] as? Int ?? 0
-                let timestamp = data["lastRequestDate"] as? Timestamp
-                let lastWeeklyTimestamp = data["lastWeeklyResetDate"] as? Timestamp
-                
                 currentModelUsage = data["modelUsage"] as? [String: Int] ?? [:]
                 currentWeeklyUsage = data["weeklyModelUsage"] as? [String: Int] ?? [:]
-                
-                if let date = timestamp?.dateValue(), Calendar.current.isDateInToday(date) {
-                    newCount = count + 1
-                } else {
-                    // Reset if new day
-                    currentModelUsage = [:]
-                }
-                
-                // Weekly Reset Logic
-                if let weeklyDate = lastWeeklyTimestamp?.dateValue(), Calendar.current.isDate(weeklyDate, equalTo: now, toGranularity: .weekOfYear) {
-                    // Same week, keep usage
-                } else {
-                    // New week, reset
-                    currentWeeklyUsage = [:]
-                }
+                newCount = count + 1
             }
             
             currentModelUsage[model, default: 0] += 1
@@ -1937,8 +2312,7 @@ final class ChatViewModel: ObservableObject {
                 "dailyRequestCount": newCount,
                 "modelUsage": currentModelUsage,
                 "weeklyModelUsage": currentWeeklyUsage,
-                "lastRequestDate": Timestamp(date: now),
-                "lastWeeklyResetDate": Timestamp(date: now)
+                "lastRequestDate": FieldValue.serverTimestamp()
             ]
             
             // Если полей подписки нет, создаем их (false), чтобы админу было удобнее менять их в консоли
@@ -2009,8 +2383,7 @@ final class ChatViewModel: ObservableObject {
     
     private func syncSessionToFirestore(_ session: ChatSession) {
         guard let user = userSession else { return }
-        // Convert PersistentIdentifier to a safe string for Firestore
-        let safeId = String(describing: session.id).replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: ":", with: "_")
+        let safeId = session.ensureUUID().uuidString
         
         let data: [String: Any] = [
             "id": safeId,
@@ -2024,11 +2397,17 @@ final class ChatViewModel: ObservableObject {
     
     private func syncMessageToFirestore(_ message: Message, session: ChatSession) {
         guard let user = userSession else { return }
+        let contentToStore: String
+        if message.content.count > maxFirestoreContentChars {
+            contentToStore = String(message.content.prefix(maxFirestoreContentChars)) + "\n\n[TRUNCATED]"
+        } else {
+            contentToStore = message.content
+        }
         
         var data: [String: Any] = [
-            "id": String(describing: message.id).replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: ":", with: "_"),
+            "id": message.id.uuidString,
             "role": message.role.rawValue,
-            "content": message.content,
+            "content": contentToStore,
             "type": message.type.rawValue,
             "createdAt": Timestamp(date: message.timestamp)
         ]
@@ -2038,13 +2417,20 @@ final class ChatViewModel: ObservableObject {
              data["imageData"] = imageData
         }
         
-        let safeSessionId = String(describing: session.id).replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: ":", with: "_")
-        let safeMessageId = String(describing: message.id).replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: ":", with: "_")
+        let safeSessionId = session.ensureUUID().uuidString
+        let safeMessageId = message.id.uuidString
         
         db.collection("users").document(user.uid)
             .collection("chats").document(safeSessionId)
             .collection("messages").document(safeMessageId)
-            .setData(data, merge: true)
+            .setData(data, merge: true) { [weak self] error in
+                if let error = error {
+                    print("Firestore message sync failed: \(error)")
+                    Task { @MainActor in
+                        self?.errorMessage = "Не удалось сохранить сообщение: \(error.localizedDescription)"
+                    }
+                }
+            }
     }
     
     private func syncSubscriptionToFirestore() {

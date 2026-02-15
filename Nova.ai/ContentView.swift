@@ -5,6 +5,7 @@ import FirebaseAuth
 @MainActor
 struct ContentView: View {
     @Environment(\.modelContext) private var modelContext
+    @Query(sort: \Project.createdAt, order: .forward) private var projects: [Project]
     @StateObject private var viewModel = ChatViewModel()
     @AppStorage("appTheme") private var selectedTheme: AppTheme = .system
     @AppStorage("appAccentColor") private var selectedAccentColor: AppAccentColor = .blue
@@ -12,9 +13,11 @@ struct ContentView: View {
     
     // Drawer State
     @State private var isMenuOpen = false
+    @State private var isSidebarExpanded = false
     // Tools Sheet State
     @State private var showTools = false
     @State private var welcomeText = ""
+    @State private var showProjectSettings = false
     
     var body: some View {
         if viewModel.userSession == nil {
@@ -44,8 +47,8 @@ struct ContentView: View {
                         .ignoresSafeArea()
                         .onTapGesture { withAnimation { isMenuOpen = false } }
                     
-                    SidebarView(viewModel: viewModel, isMenuOpen: $isMenuOpen)
-                        .frame(width: 280)
+                    SidebarView(viewModel: viewModel, isMenuOpen: $isMenuOpen, isExpanded: $isSidebarExpanded)
+                        .frame(width: isSidebarExpanded ? UIScreen.main.bounds.width : 280)
                         .background(Color(UIColor.systemBackground))
                         .transition(.move(edge: .leading))
                 }
@@ -85,10 +88,22 @@ struct ContentView: View {
         .onAppear {
             viewModel.setContext(modelContext)
         }
+        .onChange(of: isMenuOpen) { open in
+            if !open {
+                withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
+                    isSidebarExpanded = false
+                }
+            }
+        }
         .preferredColorScheme(scheme)
         .tint(selectedAccentColor.color)
         .sheet(isPresented: $viewModel.isSettingsPresented) {
             SettingsView(viewModel: viewModel)
+        }
+        .sheet(isPresented: $showProjectSettings) {
+            if let project = viewModel.currentProject {
+                ProjectSettingsView(viewModel: viewModel, project: project, selectedLanguage: selectedLanguage)
+            }
         }
         .sheet(isPresented: $viewModel.showAuthRequest) {
             AuthenticationView(viewModel: viewModel)
@@ -171,7 +186,7 @@ struct ContentView: View {
                 .font(.headline)
                 .fontWeight(.bold)
                 .foregroundColor(.primary)
-            
+
             // Simple Menu
             Menu {
                 // Main Models
@@ -247,6 +262,13 @@ struct ContentView: View {
             
             Spacer()
             
+            Button(action: { showProjectSettings = true }) {
+                Image(systemName: "folder.badge.gearshape")
+                    .font(.title3)
+                    .foregroundColor(.primary)
+            }
+            .disabled(viewModel.currentProject == nil)
+
             Button(action: { viewModel.isSettingsPresented = true }) {
                 Image(systemName: "gearshape")
                     .font(.title2)
@@ -254,7 +276,10 @@ struct ContentView: View {
             }
         }
         .padding()
-        .background(.regularMaterial)
+        .background(
+            Color(UIColor.systemBackground)
+                .ignoresSafeArea(edges: .top)
+        )
         .overlay(Divider(), alignment: .bottom)
     }
     
@@ -276,9 +301,60 @@ struct ContentView: View {
     
     private func startTypewriterAnimation() {
         let userName = viewModel.userSession?.displayName ?? (viewModel.userSession?.isAnonymous == true ? (selectedLanguage == .russian ? "Гость" : "Guest") : (selectedLanguage == .russian ? "Пользователь" : "User"))
+        
+        // Daily Greeting Logic
+        let russianQuestions = [
+            "Что сегодня в повестке дня?",
+            "Какие планы на сегодня?",
+            "Готов решать новые задачи?",
+            "Давай придумаем что-то гениальное.",
+            "Я готов помочь. С чего начнем?",
+            "О чем ты думаешь прямо сейчас?",
+            "Время действовать. Что сделаем?",
+            "Какие идеи хочешь обсудить?",
+            "Я весь во внимании.",
+            "Давай создадим что-то крутое.",
+            "Какая цель на сегодня?",
+            "Жду твоих указаний.",
+            "Вместе мы свернем горы.",
+            "Что тебя вдохновляет сегодня?",
+            "Готов к мозговому штурму?",
+            "Давай разберемся с делами.",
+            "Какой вопрос не дает покоя?",
+            "Я здесь, чтобы помочь тебе.",
+            "Сделаем этот день продуктивным?",
+            "Твой личный ассистент на связи."
+        ]
+        
+        let englishQuestions = [
+            "What's on the agenda today?",
+            "What are the plans for today?",
+            "Ready for new challenges?",
+            "Let's invent something genius.",
+            "Ready to help. Where to start?",
+            "What's on your mind right now?",
+            "Time to act. What shall we do?",
+            "What ideas do you want to discuss?",
+            "I'm all ears.",
+            "Let's create something cool.",
+            "What's the goal for today?",
+            "Awaiting your instructions.",
+            "Together we'll move mountains.",
+            "What inspires you today?",
+            "Ready for a brainstorm?",
+            "Let's get things done.",
+            "What question is on your mind?",
+            "I'm here to help you.",
+            "Shall we make this day productive?",
+            "Your personal assistant is online."
+        ]
+        
+        let list = selectedLanguage == .russian ? russianQuestions : englishQuestions
+        let dayOfYear = Calendar.current.ordinality(of: .day, in: .year, for: Date()) ?? 1
+        let dailyQuestion = list[dayOfYear % list.count]
+        
         let greeting = selectedLanguage == .russian ? "Привет, \(userName)" : "Hello, \(userName)"
-        let question = selectedLanguage == .russian ? "Что у вас на уме?" : "What's on your mind?"
-        let fullText = "\(greeting)\n\(question)"
+        let fullText = "\(greeting)\n\(dailyQuestion)"
         
         welcomeText = ""
         Task {

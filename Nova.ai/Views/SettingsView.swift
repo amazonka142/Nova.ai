@@ -185,6 +185,20 @@ struct SettingsView: View {
                         }
                     }
                 }
+
+                Section(header: Text(selectedLanguage == .russian ? "Лимиты" : "Limits")) {
+                    NavigationLink {
+                        LimitsDashboardView(viewModel: viewModel, selectedLanguage: selectedLanguage)
+                    } label: {
+                        HStack {
+                            Label(selectedLanguage == .russian ? "Дашборд лимитов" : "Limits Dashboard", systemImage: "gauge")
+                            Spacer()
+                            Text(planShortTitle)
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                }
                 
                 Section(header: Text(selectedLanguage == .russian ? "Интеллект" : "Intelligence")) {
                     NavigationLink {
@@ -305,6 +319,15 @@ struct SettingsView: View {
     private var subscriptionSubtitle: String {
         selectedLanguage == .russian ? "Безлимит и лучшие модели" : "Unlimited & Best Models"
     }
+
+    private var planShortTitle: String {
+        if viewModel.userSession?.isAnonymous == true {
+            return selectedLanguage == .russian ? "Guest" : "Guest"
+        }
+        if viewModel.isMax { return "Max" }
+        if viewModel.isPro { return "Pro" }
+        return "Free"
+    }
     
     private var subscriptionRowView: some View {
         HStack {
@@ -368,12 +391,35 @@ struct ChangelogView: View {
                             .padding(.top, 4)
                         
                         VStack(alignment: .leading, spacing: 8) {
-                            ChangelogFeatureRow(icon: "photo.stack", color: .orange, text: "Галерея генераций: Просматривайте и делитесь всеми созданными изображениями.")
+                            ChangelogFeatureRow(icon: "lock.shield", color: .indigo, text: "Безопасный предпросмотр HTML: JavaScript отключен по умолчанию.")
+                            ChangelogFeatureRow(icon: "paperclip", color: .blue, text: "Контроль размеров файлов: крупные документы обрезаются и не ломают чат.")
+                            ChangelogFeatureRow(icon: "tray.full", color: .orange, text: "База знаний доступна в Nova Max (до 20 файлов на проект).")
+                            ChangelogFeatureRow(icon: "doc.richtext", color: .purple, text: "Поддержка DOCX/PPTX для файлов проекта и анализа.")
+                            ChangelogFeatureRow(icon: "doc.text.magnifyingglass", color: .purple, text: "Deep Research сохраняется быстрее и стабильнее.")
+                            ChangelogFeatureRow(icon: "arrow.up.arrow.down", color: .green, text: "Корректная сортировка чатов после использования инструментов.")
+                            ChangelogFeatureRow(icon: "gauge", color: .teal, text: "Дашборд лимитов: наглядный остаток по моделям и периодам.")
+                            ChangelogFeatureRow(icon: "magnifyingglass", color: .blue, text: "Поиск по чатам в сайдбаре с полноэкранным режимом и анимацией.")
+                            ChangelogFeatureRow(icon: "folder", color: .purple, text: "Проекты (Workspaces): изолированные пространства с отдельными чатами и настройками.")
                         }
                     }
                     .padding(.vertical, 4)
                 } header: {
                     Text("История версий")
+                }
+                
+                Section {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("v1.2026.009 (8506)")
+                            .font(.headline)
+                            .foregroundColor(.secondary)
+                        
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("• Галерея генераций: Просматривайте и делитесь всеми созданными изображениями.")
+                        }
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                    }
+                    .padding(.vertical, 4)
                 }
                 
                 Section {

@@ -9,6 +9,8 @@ struct AuthenticationView: View {
     @State private var displayedTitle = ""
     @State private var showContent = false
     
+    @State private var showAppleSignInUnavailableAlert = false
+    
     @State private var animateBlobs = false
     @State private var animateLogo = false
     
@@ -114,19 +116,31 @@ struct AuthenticationView: View {
                 
                 Spacer()
                 
-                // Apple Sign In
-                SignInWithAppleButton(.signIn) { request in
-                    viewModel.handleAppleSignInRequest(request)
-                } onCompletion: { result in
-                    viewModel.handleAppleSignInCompletion(result)
+                // Apple Sign In (Disabled for IPA Distribution)
+                Button(action: {
+                    showAppleSignInUnavailableAlert = true
+                }) {
+                    HStack {
+                        Image(systemName: "apple.logo")
+                            .font(.title2)
+                        Text("Войти через Apple")
+                            .font(.system(size: 19, weight: .medium))
+                    }
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 50)
+                    .foregroundColor(colorScheme == .dark ? .black : .white)
+                    .background(colorScheme == .dark ? Color.white : Color.black)
+                    .cornerRadius(12)
                 }
-                .signInWithAppleButtonStyle(colorScheme == .dark ? .white : .black)
-                .frame(height: 50)
-                .cornerRadius(12)
                 .padding(.horizontal, 40)
                 .padding(.bottom, 12)
                 .opacity(showContent ? 1 : 0)
                 .animation(.easeIn.delay(1.2), value: showContent)
+                .alert("Функция недоступна", isPresented: $showAppleSignInUnavailableAlert) {
+                    Button("OK", role: .cancel) { }
+                } message: {
+                    Text("Эта функция будет доступна только в будущих версиях. Пожалуйста, войдите через Google.")
+                }
                 
                 // Google Sign In
                 Button(action: {

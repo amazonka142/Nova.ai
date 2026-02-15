@@ -9,6 +9,7 @@ struct ChatView: View {
     @State private var previewImage: PreviewImage?
     @State private var selectedResearchId: IdentifiableUUID? // Для открытия шторки деталей
     @State private var selectedArtifact: ArtifactContent? // Для предпросмотра HTML
+    @State private var sortedMessages: [Message] = []
     
     @AppStorage("appLanguage") private var selectedLanguage: AppLanguage = .russian
     
@@ -104,8 +105,7 @@ struct ChatView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(spacing: 16) {
-                    // Explicitly sort messages by timestamp to prevent disorder
-                    ForEach(viewModel.currentSession.messages.sorted(by: { $0.timestamp < $1.timestamp })) { message in
+                    ForEach(sortedMessages) { message in
                         if message.role == .system {
                             // System Notification Style
                             Text(message.content)
@@ -155,7 +155,11 @@ struct ChatView: View {
                 .padding(.vertical)
             }
             .scrollDismissesKeyboard(.interactively)
-            .onChange(of: viewModel.currentSession.messages) { _ in
+            .onAppear {
+                refreshSortedMessages()
+            }
+            .onChange(of: viewModel.currentSession.messages.map(\.id)) { _ in
+                refreshSortedMessages()
                 scrollToBottom(proxy: proxy)
             }
             .onChange(of: viewModel.isLoading) { loading in
@@ -253,8 +257,6 @@ struct ChatView: View {
     }
     
     private func scrollToBottom(proxy: ScrollViewProxy) {
-        // Sort to find the true last message
-        let sortedMessages = viewModel.currentSession.messages.sorted(by: { $0.timestamp < $1.timestamp })
         guard let lastId = sortedMessages.last?.id else { return }
         
         // Small delay to allow View to render the new bubble height
@@ -263,6 +265,10 @@ struct ChatView: View {
                 proxy.scrollTo(lastId, anchor: .bottom)
             }
         }
+    }
+    
+    private func refreshSortedMessages() {
+        sortedMessages = viewModel.currentSession.messages.sorted(by: { $0.timestamp < $1.timestamp })
     }
 }
 

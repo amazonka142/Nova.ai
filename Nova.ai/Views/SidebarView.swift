@@ -5,11 +5,13 @@ import FirebaseAuth
 struct SidebarView: View {
     @ObservedObject var viewModel: ChatViewModel
     @Binding var isMenuOpen: Bool
+    @Binding var isExpanded: Bool
     
     @AppStorage("appLanguage") private var selectedLanguage: AppLanguage = .russian
     // Используем SwiftData для получения списка чатов
     @Query(sort: \ChatSession.lastModified, order: .reverse) private var sessions: [ChatSession]
     @Query(sort: \ChatFolder.creationDate) private var folders: [ChatFolder]
+    @Query(sort: \Project.createdAt, order: .forward) private var projects: [Project]
     
     @State private var sessionToRename: ChatSession?
     @State private var newTitleInput: String = ""
@@ -17,6 +19,9 @@ struct SidebarView: View {
     @State private var sessionToDelete: ChatSession?
     @State private var showDeleteAlert = false
     @State private var isGalleryPresented = false
+    @FocusState private var isSearchFocused: Bool
+    @State private var searchText = ""
+    @State private var showCreateProjectSheet = false
     
     // Folder State
     @State private var showCreateFolderAlert = false
@@ -38,7 +43,7 @@ struct SidebarView: View {
         var sections: [(String, [ChatSession])] = []
         
         // Filter out sessions that are in a folder
-        let filteredSessions = sessions.filter { $0.folder == nil }
+        let filteredSessions = projectSessions.filter { $0.folder == nil }
         
         for session in filteredSessions {
             let key: String
@@ -60,6 +65,40 @@ struct SidebarView: View {
             }
         }
         return sections
+    }
+
+    private var isSearching: Bool {
+        !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var filteredSessions: [ChatSession] {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return [] }
+        return projectSessions
+            .filter { $0.title.localizedCaseInsensitiveContains(query) }
+            .sorted { $0.lastModified > $1.lastModified }
+    }
+    
+    private var projectSessions: [ChatSession] {
+        guard let project = viewModel.currentProject else { return sessions }
+        return sessions.filter { $0.project?.id == project.id }
+    }
+    
+    private var visibleFolders: [ChatFolder] {
+        let sessionIds = Set(projectSessions.map { $0.id })
+        return folders.filter { folder in
+            guard let folderSessions = folder.sessions else { return false }
+            return folderSessions.contains(where: { sessionIds.contains($0.id) })
+        }
+    }
+    
+    private func updateSearchExpansion() {
+        let shouldExpand = isSearchFocused || isSearching
+        if isExpanded != shouldExpand {
+            withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
+                isExpanded = shouldExpand
+            }
+        }
     }
     
     // Emoji Filter Helper
@@ -95,6 +134,44 @@ struct SidebarView: View {
             .padding()
             .padding(.top, 10) // Уменьшенный отступ
             
+            // Поиск по чатам
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                
+                TextField(
+                    selectedLanguage == .russian ? "Поиск чатов" : "Search chats",
+                    text: $searchText
+                )
+                .focused($isSearchFocused)
+                .textInputAutocapitalization(.never)
+                .disableAutocorrection(true)
+                .submitLabel(.search)
+                
+                if !searchText.isEmpty {
+                    Button(action: { searchText = "" }) {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundColor(.secondary)
+                    }
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(Color(UIColor.secondarySystemBackground))
+            .cornerRadius(12)
+            .padding(.horizontal)
+            .padding(.bottom, 8)
+            .onAppear {
+                updateSearchExpansion()
+            }
+            .onChange(of: isSearchFocused) { _ in
+                updateSearchExpansion()
+            }
+            .onChange(of: searchText) { _ in
+                updateSearchExpansion()
+            }
+            
             // Галерея
             Button(action: {
                 isGalleryPresented = true
@@ -127,71 +204,8 @@ struct SidebarView: View {
             // Список чатов
             ScrollView {
                 LazyVStack(spacing: 4) {
-                    
-                    // --- FOLDERS SECTION ---
-                    VStack(alignment: .leading) {
-                        HStack {
-                            Text(selectedLanguage == .russian ? "Папки" : "Folders")
-                                .font(.caption)
-                                .fontWeight(.semibold)
-                                .foregroundColor(.secondary)
-                            Spacer()
-                            Button(action: {
-                                newFolderName = ""
-                                newFolderEmoji = "📁"
-                                showCreateFolderAlert = true
-                            }) {
-                                Image(systemName: "folder.badge.plus")
-                                    .font(.caption)
-                                    .foregroundColor(.blue)
-                            }
-                        }
-                        .padding(.horizontal)
-                        .padding(.top, 12)
-                        
-                        ScrollView(.horizontal, showsIndicators: false) {
-                            HStack(spacing: 12) {
-                                ForEach(folders) { folder in
-                                    Button(action: {
-                                        selectedFolder = folder
-                                    }) {
-                                        VStack {
-                                            Text(folder.emoji)
-                                                .font(.title)
-                                            Text(folder.name)
-                                                .font(.caption)
-                                                .lineLimit(1)
-                                                .foregroundColor(.primary)
-                                        }
-                                        .frame(width: 70, height: 70)
-                                        .background(Color(UIColor.secondarySystemBackground))
-                                        .cornerRadius(12)
-                                    }
-                                    .contextMenu {
-                                        Button {
-                                            folderToRename = folder
-                                            renameFolderName = folder.name
-                                            renameFolderEmoji = folder.emoji
-                                            showRenameFolderAlert = true
-                                        } label: {
-                                            Label(selectedLanguage == .russian ? "Переименовать" : "Rename", systemImage: "pencil")
-                                        }
-                                        
-                                        Button(role: .destructive) {
-                                            viewModel.deleteFolder(folder)
-                                        } label: {
-                                            Label(selectedLanguage == .russian ? "Удалить папку" : "Delete Folder", systemImage: "trash")
-                                        }
-                                    }
-                                }
-                            }
-                            .padding(.horizontal)
-                        }
-                    }
-                    // -----------------------
-                    
-                    ForEach(groupedSessions, id: \.0) { section in
-                        Text(section.0)
+                    if isSearching {
+                        Text(selectedLanguage == .russian ? "Результаты" : "Results")
                             .font(.caption)
                             .fontWeight(.semibold)
                             .foregroundColor(.secondary)
@@ -200,55 +214,260 @@ struct SidebarView: View {
                             .padding(.top, 12)
                             .padding(.bottom, 4)
                         
-                        ForEach(section.1) { session in
-                        HStack {
-                            Image(systemName: "bubble.left")
+                        if filteredSessions.isEmpty {
+                            Text(selectedLanguage == .russian ? "Ничего не найдено" : "No results")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
-                            
-                            Text(session.title)
-                                .font(.body)
-                                .lineLimit(1)
-                                .foregroundColor(.primary)
-                            
-                            Spacer()
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal)
+                                .padding(.vertical, 8)
+                        } else {
+                            ForEach(filteredSessions) { session in
+                                HStack {
+                                    Image(systemName: "bubble.left")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                    
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(session.title)
+                                            .font(.body)
+                                            .lineLimit(1)
+                                            .foregroundColor(.primary)
+                                        
+                                        if let folder = session.folder {
+                                            Text(folder.name)
+                                                .font(.caption2)
+                                                .foregroundColor(.secondary)
+                                                .lineLimit(1)
+                                        }
+                                    }
+                                    
+                                    Spacer()
+                                }
+                                .padding(.vertical, 12)
+                                .padding(.horizontal)
+                                .background(
+                                    viewModel.currentSession.id == session.id ? Color.secondary.opacity(0.15) : Color.clear
+                                )
+                                .cornerRadius(8)
+                                .padding(.horizontal, 8)
+                                .contentShape(Rectangle())
+                                .onTapGesture {
+                                    viewModel.selectSession(session)
+                                    withAnimation { isMenuOpen = false }
+                                }
+                                // Контекстное меню по долгому нажатию
+                                .contextMenu {
+                                    Button {
+                                        sessionToMove = session
+                                        showMoveSheet = true
+                                    } label: {
+                                        Label(selectedLanguage == .russian ? "Добавить в папку" : "Add to Folder", systemImage: "folder")
+                                    }
+                                    
+                                    Button {
+                                        sessionToRename = session
+                                        newTitleInput = session.title
+                                        showRenameAlert = true
+                                    } label: {
+                                        Label(selectedLanguage == .russian ? "Переименовать" : "Rename", systemImage: "pencil")
+                                    }
+                                    
+                                    Button(role: .destructive) {
+                                        sessionToDelete = session
+                                        showDeleteAlert = true
+                                    } label: {
+                                        Label(selectedLanguage == .russian ? "Удалить" : "Delete", systemImage: "trash")
+                                    }
+                                }
+                            }
                         }
-                        .padding(.vertical, 12)
-                        .padding(.horizontal)
-                        .background(
-                            viewModel.currentSession.id == session.id ? Color.secondary.opacity(0.15) : Color.clear
-                        )
-                        .cornerRadius(8)
-                        .padding(.horizontal, 8)
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            viewModel.selectSession(session)
-                            withAnimation { isMenuOpen = false }
-                        }
-                        // Контекстное меню по долгому нажатию
-                        .contextMenu {
-                            Button {
-                                sessionToMove = session
-                                showMoveSheet = true
-                            } label: {
-                                Label(selectedLanguage == .russian ? "Добавить в папку" : "Add to Folder", systemImage: "folder")
+                    } else {
+                        // --- PROJECTS SECTION ---
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(selectedLanguage == .russian ? "Проекты" : "Projects")
+                                .font(.caption)
+                                .fontWeight(.semibold)
+                                .foregroundColor(.secondary)
+                                .padding(.horizontal)
+                                .padding(.top, 8)
+                            
+                            Button(action: {
+                                showCreateProjectSheet = true
+                            }) {
+                                HStack(spacing: 12) {
+                                    Image(systemName: "folder.badge.plus")
+                                        .font(.body)
+                                        .foregroundColor(.secondary)
+                                        .frame(width: 20)
+                                    
+                                    Text(selectedLanguage == .russian ? "Новый проект" : "New Project")
+                                        .font(.body)
+                                        .foregroundColor(.primary)
+                                    
+                                    Spacer()
+                                }
+                                .padding(.vertical, 10)
+                                .padding(.horizontal)
+                                .background(Color.clear)
+                                .contentShape(Rectangle())
                             }
                             
-                            Button {
-                                sessionToRename = session
-                                newTitleInput = session.title
-                                showRenameAlert = true
-                            } label: {
-                                Label(selectedLanguage == .russian ? "Переименовать" : "Rename", systemImage: "pencil")
-                            }
-                            
-                            Button(role: .destructive) {
-                                sessionToDelete = session
-                                showDeleteAlert = true
-                            } label: {
-                                Label(selectedLanguage == .russian ? "Удалить" : "Delete", systemImage: "trash")
+                            ForEach(projects) { project in
+                                Button(action: {
+                                    viewModel.selectProject(project)
+                                    withAnimation { isMenuOpen = false }
+                                }) {
+                                    HStack(spacing: 12) {
+                                        ProjectIconView(icon: project.icon, font: .body, color: project.themeColor)
+                                            .frame(width: 20)
+                                        
+                                        Text(project.name)
+                                            .font(.body)
+                                            .foregroundColor(.primary)
+                                            .lineLimit(1)
+                                        
+                                        Spacer()
+                                    }
+                                    .padding(.vertical, 10)
+                                    .padding(.horizontal)
+                                    .background(
+                                        viewModel.currentProject?.id == project.id ? Color.secondary.opacity(0.15) : Color.clear
+                                    )
+                                    .cornerRadius(8)
+                                    .padding(.horizontal, 8)
+                                    .contentShape(Rectangle())
+                                }
                             }
                         }
+                        .padding(.bottom, 6)
+                        .sheet(isPresented: $showCreateProjectSheet) {
+                            ProjectEditorView(viewModel: viewModel, selectedLanguage: selectedLanguage)
+                        }
+                        // -----------------------
+                        
+                        // --- FOLDERS SECTION ---
+                        VStack(alignment: .leading) {
+                            HStack {
+                                Text(selectedLanguage == .russian ? "Папки" : "Folders")
+                                    .font(.caption)
+                                    .fontWeight(.semibold)
+                                    .foregroundColor(.secondary)
+                                Spacer()
+                                Button(action: {
+                                    newFolderName = ""
+                                    newFolderEmoji = "📁"
+                                    showCreateFolderAlert = true
+                                }) {
+                                    Image(systemName: "folder.badge.plus")
+                                        .font(.caption)
+                                        .foregroundColor(.blue)
+                                }
+                            }
+                            .padding(.horizontal)
+                            .padding(.top, 12)
+                            
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 12) {
+                                ForEach(visibleFolders) { folder in
+                                        Button(action: {
+                                            selectedFolder = folder
+                                        }) {
+                                            VStack {
+                                                Text(folder.emoji)
+                                                    .font(.title)
+                                                Text(folder.name)
+                                                    .font(.caption)
+                                                    .lineLimit(1)
+                                                    .foregroundColor(.primary)
+                                            }
+                                            .frame(width: 70, height: 70)
+                                            .background(Color(UIColor.secondarySystemBackground))
+                                            .cornerRadius(12)
+                                        }
+                                        .contextMenu {
+                                            Button {
+                                                folderToRename = folder
+                                                renameFolderName = folder.name
+                                                renameFolderEmoji = folder.emoji
+                                                showRenameFolderAlert = true
+                                            } label: {
+                                                Label(selectedLanguage == .russian ? "Переименовать" : "Rename", systemImage: "pencil")
+                                            }
+                                            
+                                            Button(role: .destructive) {
+                                                viewModel.deleteFolder(folder)
+                                            } label: {
+                                                Label(selectedLanguage == .russian ? "Удалить папку" : "Delete Folder", systemImage: "trash")
+                                            }
+                                        }
+                                    }
+                                }
+                                .padding(.horizontal)
+                            }
+                        }
+                        // -----------------------
+                        
+                        ForEach(groupedSessions, id: \.0) { section in
+                            Text(section.0)
+                                .font(.caption)
+                                .fontWeight(.semibold)
+                                .foregroundColor(.secondary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal)
+                                .padding(.top, 12)
+                                .padding(.bottom, 4)
+                            
+                            ForEach(section.1) { session in
+                            HStack {
+                                Image(systemName: "bubble.left")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                
+                                Text(session.title)
+                                    .font(.body)
+                                    .lineLimit(1)
+                                    .foregroundColor(.primary)
+                                
+                                Spacer()
+                            }
+                            .padding(.vertical, 12)
+                            .padding(.horizontal)
+                            .background(
+                                viewModel.currentSession.id == session.id ? Color.secondary.opacity(0.15) : Color.clear
+                            )
+                            .cornerRadius(8)
+                            .padding(.horizontal, 8)
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                viewModel.selectSession(session)
+                                withAnimation { isMenuOpen = false }
+                            }
+                            // Контекстное меню по долгому нажатию
+                            .contextMenu {
+                                Button {
+                                    sessionToMove = session
+                                    showMoveSheet = true
+                                } label: {
+                                    Label(selectedLanguage == .russian ? "Добавить в папку" : "Add to Folder", systemImage: "folder")
+                                }
+                                
+                                Button {
+                                    sessionToRename = session
+                                    newTitleInput = session.title
+                                    showRenameAlert = true
+                                } label: {
+                                    Label(selectedLanguage == .russian ? "Переименовать" : "Rename", systemImage: "pencil")
+                                }
+                                
+                                Button(role: .destructive) {
+                                    sessionToDelete = session
+                                    showDeleteAlert = true
+                                } label: {
+                                    Label(selectedLanguage == .russian ? "Удалить" : "Delete", systemImage: "trash")
+                                }
+                            }
+                            }
                         }
                     }
                 }

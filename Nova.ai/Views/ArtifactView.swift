@@ -74,7 +74,7 @@ struct ArtifactWebView: UIViewRepresentable {
     
     func makeUIView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
-        config.defaultWebpagePreferences.allowsContentJavaScript = true // Разрешаем JS для интерактивности
+        config.defaultWebpagePreferences.allowsContentJavaScript = false
         
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.isOpaque = false

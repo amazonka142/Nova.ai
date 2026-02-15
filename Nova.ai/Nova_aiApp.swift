@@ -47,6 +47,6 @@ struct Nova_aiApp: App {
                     GIDSignIn.sharedInstance.handle(url)
                 }
         }
-        .modelContainer(for: ChatSession.self)
+        .modelContainer(for: [ChatSession.self, ChatFolder.self, Project.self, ProjectFile.self])
     }
 }

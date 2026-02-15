@@ -110,7 +110,7 @@ struct ToolsMenuView: View {
                             dismiss()
                         }
                         
-                        ToolRow(icon: "paperclip", color: .gray, title: "Добавить файлы", subtitle: "PDF, Docx для анализа") {
+                        ToolRow(icon: "paperclip", color: .gray, title: "Добавить файлы", subtitle: "PDF, DOCX, PPTX для анализа") {
                             isFileImporterPresented = true
                         }
                     }
@@ -120,7 +120,7 @@ struct ToolsMenuView: View {
             }
         }
         .background(Color(UIColor.systemBackground))
-        .fileImporter(isPresented: $isFileImporterPresented, allowedContentTypes: [.pdf, .text, .plainText], allowsMultipleSelection: false) { result in
+        .fileImporter(isPresented: $isFileImporterPresented, allowedContentTypes: allowedFileTypes, allowsMultipleSelection: false) { result in
             switch result {
             case .success(let urls):
                 if let url = urls.first {
@@ -140,6 +140,13 @@ struct ToolsMenuView: View {
         } message: {
             Text("Эта функция находится в стадии альфа-тестирования. Возможны ошибки, неточности или нестабильная работа.")
         }
+    }
+    
+    private var allowedFileTypes: [UTType] {
+        var types: [UTType] = [.pdf, .text, .plainText]
+        if let docx = UTType(filenameExtension: "docx") { types.append(docx) }
+        if let pptx = UTType(filenameExtension: "pptx") { types.append(pptx) }
+        return types
     }
 }
 

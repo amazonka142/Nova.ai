@@ -66,12 +66,22 @@ struct ChatBubbleView: View {
                 
                 // Text Content
                 if !message.content.isEmpty {
-                    Markdown(message.content)
-                        .markdownTheme(themeForMessage)
-                        .textSelection(.enabled)
-                        .padding(chatStyle == .minimal ? 0 : 12)
-                        .background(bubbleBackground)
-                        .cornerRadius(16, corners: corners)
+                    if chatStyle == .minimal {
+                        Markdown(message.content)
+                            .markdownTheme(themeForMessage)
+                            .textSelection(.enabled)
+                            .padding(.vertical, 2)
+                            .padding(.horizontal, 0)
+                            .background(bubbleBackground)
+                    } else {
+                        Markdown(message.content)
+                            .markdownTheme(themeForMessage)
+                            .textSelection(.enabled)
+                            .padding(.vertical, 12)
+                            .padding(.horizontal, 12)
+                            .background(bubbleBackground)
+                            .clipShape(RoundedCorner(radius: 16, corners: corners))
+                    }
                 }
                 
                 // Action Buttons (Only for AI and when NOT typing)

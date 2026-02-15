@@ -10,165 +10,92 @@ struct SubscriptionView: View {
     
     @AppStorage("appLanguage") private var selectedLanguage: AppLanguage = .russian
     
+    // Animation properties
+    @State private var animateGradient = false
+    @Namespace private var animationNamespace
+    
+    // Theme Colors based on selection
+    var themeColor: Color {
+        switch selectedPlan {
+        case "Free": return .gray
+        case "Pro": return .blue
+        case "Max": return .purple
+        default: return .gray
+        }
+    }
+    
+    var themeGradient: LinearGradient {
+        switch selectedPlan {
+        case "Free":
+            return LinearGradient(colors: [Color.gray.opacity(0.8), Color.gray], startPoint: .topLeading, endPoint: .bottomTrailing)
+        case "Pro":
+            return LinearGradient(colors: [Color.blue, Color.cyan], startPoint: .topLeading, endPoint: .bottomTrailing)
+        case "Max":
+            return LinearGradient(colors: [Color.purple, Color.indigo, Color.pink], startPoint: .topLeading, endPoint: .bottomTrailing)
+        default:
+            return LinearGradient(colors: [.gray], startPoint: .top, endPoint: .bottom)
+        }
+    }
+
     var body: some View {
-        ScrollView {
-            VStack(spacing: 20) {
-                // Header
-                VStack(spacing: 10) {
-                    Image(systemName: "sparkles")
-                        .font(.system(size: 60))
-                        .foregroundStyle(LinearGradient(colors: [.blue, .purple], startPoint: .topLeading, endPoint: .bottomTrailing))
+        ZStack {
+            // 1. Dynamic Background
+            RadialGradient(gradient: Gradient(colors: [themeColor.opacity(0.12), Color(UIColor.systemBackground)]), center: .top, startRadius: 50, endRadius: 800)
+                .ignoresSafeArea()
+                .animation(.easeInOut(duration: 0.5), value: selectedPlan)
+            
+            ScrollView(showsIndicators: false) {
+                VStack(spacing: 30) {
+                    // 2. Header
+                    SubscriptionHeaderView(selectedLanguage: selectedLanguage, themeGradient: themeGradient, animateGradient: $animateGradient)
+                        .padding(.top, 20)
                     
-                    Text("Nova Pro")
-                        .font(.largeTitle)
-                        .fontWeight(.bold)
+                    // 3. Custom Segmented Control
+                    CustomPlanPicker(selectedPlan: $selectedPlan, animationNamespace: animationNamespace, themeColor: themeColor, selectedLanguage: selectedLanguage)
                     
-                    Text(selectedLanguage == .russian ? "Раскрой полный потенциал" : "Unlock Full Potential")
-                        .font(.title3)
-                        .foregroundColor(.secondary)
-                }
-                .padding(.top, 40)
-                
-                // Plan Selector
-                HStack(spacing: 15) {
-                    PlanButton(title: "Free", color: .gray, selectedPlan: $selectedPlan)
-                    PlanButton(title: "Pro", color: .blue, selectedPlan: $selectedPlan)
-                    PlanButton(title: "Max", color: .purple, selectedPlan: $selectedPlan)
-                }
-                .padding(.horizontal)
-                
-                // --- ТАБЛИЦА СРАВНЕНИЯ ---
-                VStack(spacing: 0) {
-                    // Заголовки таблицы
-                    HStack(alignment: .bottom) {
-                        Text(selectedLanguage == .russian ? "Функции" : "Features")
-                            .font(.system(size: 16, weight: .bold))
+                    // 4. Large Plan Card
+                    PlanCardView(
+                        plan: selectedPlan,
+                        selectedLanguage: selectedLanguage,
+                        themeGradient: themeGradient,
+                        themeColor: themeColor
+                    ) {
+                        handlePlanAction()
+                    }
+                    .padding(.horizontal)
+                    // Плавный переход при смене карточки
+                    .id(selectedPlan)
+                    .transition(.asymmetric(insertion: .scale(scale: 0.95).combined(with: .opacity), removal: .opacity))
+                    
+                    // 5. Detailed Comparison
+                    VStack(spacing: 20) {
+                        Text(selectedLanguage == .russian ? "Сравнение возможностей" : "Compare Features")
+                            .font(.headline)
                             .foregroundColor(.secondary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
                         
-                        // Колонки тарифов
-                        HStack(spacing: 20) {
-                            HeaderTitle(text: "Free", color: .gray, isSelected: selectedPlan == "Free")
-                            HeaderTitle(text: "Pro", color: .blue, isSelected: selectedPlan == "Pro")
-                            HeaderTitle(text: "Max", color: .purple, isSelected: selectedPlan == "Max")
-                        }
+                        DetailedComparisonView(selectedPlan: selectedPlan, selectedLanguage: selectedLanguage)
                     }
+                    .padding(.top, 10)
                     .padding(.horizontal)
-                    .padding(.top, 20)
-                    .padding(.bottom, 10)
                     
-                    Divider().opacity(0.5)
-                    
-                    // Список функций
-                    VStack(spacing: 25) {
-                        // Блок 1: Мозги
-                        Group {
-                            ComparisonRow(title: "Nova v1-RLHF", free: true, pro: true, max: true, selectedPlan: selectedPlan)
-                            ComparisonRow(title: "Gemini Flash Lite", free: true, pro: true, max: true, selectedPlan: selectedPlan)
-                            ComparisonRow(title: "GPT-5 Nano", free: selectedLanguage == .russian ? "10/д" : "10/d", pro: "check", max: "check", selectedPlan: selectedPlan)
-                            ComparisonRow(title: "GPT-5 Mini", free: "minus", pro: selectedLanguage == .russian ? "100/д" : "100/d", max: "check", selectedPlan: selectedPlan)
-                            ComparisonRow(title: "Nova-v1-RP", free: selectedLanguage == .russian ? "5/д" : "5/d", pro: selectedLanguage == .russian ? "50/н" : "50/w", max: selectedLanguage == .russian ? "150/н" : "150/w", selectedPlan: selectedPlan)
-                            ComparisonRow(title: "Nova-v1-Pro", free: "minus", pro: selectedLanguage == .russian ? "60/н" : "60/w", max: selectedLanguage == .russian ? "200/н" : "200/w", selectedPlan: selectedPlan)
-                            ComparisonRow(title: "DeepThink", free: "minus", pro: "minus", max: selectedLanguage == .russian ? "30/д" : "30/d", selectedPlan: selectedPlan)
-                        }
-                        
-                        // Блок 2: Возможности
-                        Group {
-                            ComparisonRow(title: selectedLanguage == .russian ? "Безлимит (База)" : "Unlimited (Base)", free: true, pro: true, max: true, selectedPlan: selectedPlan)
-                            ComparisonRow(title: selectedLanguage == .russian ? "Память (фактов)" : "Memory (facts)", free: "10", pro: "25", max: "50", selectedPlan: selectedPlan)
-                            ComparisonRow(title: selectedLanguage == .russian ? "Голосовое общение" : "Voice Chat", free: false, pro: true, max: true, selectedPlan: selectedPlan)
-                        }
-                        
-                        // Блок 3: Экстра (Max)
-                        Group {
-                            ComparisonRow(title: selectedLanguage == .russian ? "Поиск в интернете" : "Web Search", free: false, pro: true, max: true, selectedPlan: selectedPlan)
-                            ComparisonRow(title: selectedLanguage == .russian ? "Deep Research (Альфа)" : "Deep Research (Alpha)", free: "minus", pro: "minus", max: selectedLanguage == .russian ? "10/н" : "10/w", selectedPlan: selectedPlan)
-                            ComparisonRow(title: selectedLanguage == .russian ? "Генерация картинок" : "Image Generation", free: selectedLanguage == .russian ? "20/д" : "20/d", pro: "check", max: "check", selectedPlan: selectedPlan)
-                            ComparisonRow(title: "Quality Images", free: "minus", pro: "minus", max: selectedLanguage == .russian ? "20/д" : "20/d", selectedPlan: selectedPlan)
-                            ComparisonRow(title: selectedLanguage == .russian ? "Анализ файлов" : "File Analysis", free: false, pro: false, max: true, selectedPlan: selectedPlan)
-                        }
-                    }
-                    .padding(.top, 25)
-                    .padding(.horizontal)
-                    .padding(.bottom, 20)
+                    // Footer
+                    Text(selectedLanguage == .russian ? "В этой версии оплата производится вручную через администратора." : "In this version, payment is processed manually via administrator.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+                        .padding(.top, 20)
+                        .padding(.horizontal, 40)
+                        .padding(.bottom, 40)
                 }
-                .background(ColumnBackground(selectedPlan: selectedPlan))
-                .background(Color(UIColor.secondarySystemBackground))
-                .cornerRadius(16)
-                .padding()
-                
-                // Purchase Buttons
-                VStack(spacing: 12) {
-                    if selectedPlan == "Free" {
-                        Button(action: {
-                            dismiss()
-                        }) {
-                            HStack {
-                                Spacer()
-                                Text(selectedLanguage == .russian ? "Меня все устраивает" : "I'm satisfied")
-                                    .fontWeight(.bold)
-                                Spacer()
-                            }
-                            .padding()
-                            .background(Color.secondary.opacity(0.15))
-                            .foregroundColor(.primary)
-                            .cornerRadius(16)
-                        }
-                    } else if selectedPlan == "Pro" {
-                        Button(action: {
-                            selectedPlanForActivation = "Nova Pro"
-                            showActivationAlert = true
-                        }) {
-                            HStack {
-                                VStack(alignment: .leading) {
-                                    Text("Nova Pro")
-                                        .font(.headline)
-                                    Text(selectedLanguage == .russian ? "299 ₽ / мес" : "$2.99 / mo")
-                                        .font(.caption)
-                                        .opacity(0.8)
-                                }
-                                Spacer()
-                                Text(selectedLanguage == .russian ? "Активировать" : "Activate")
-                                    .fontWeight(.bold)
-                            }
-                            .padding()
-                            .background(Color.blue.opacity(0.1))
-                            .foregroundColor(.blue)
-                            .cornerRadius(16)
-                        }
-                    } else if selectedPlan == "Max" {
-                        Button(action: {
-                            selectedPlanForActivation = "Nova Max"
-                            showActivationAlert = true
-                        }) {
-                            HStack {
-                                VStack(alignment: .leading) {
-                                    Text("Nova Max")
-                                        .font(.headline)
-                                    Text(selectedLanguage == .russian ? "699 ₽ / мес" : "$6.99 / mo")
-                                        .font(.caption)
-                                        .opacity(0.8)
-                                }
-                                Spacer()
-                                Text(selectedLanguage == .russian ? "Активировать" : "Activate")
-                                    .fontWeight(.bold)
-                            }
-                            .padding()
-                            .background(LinearGradient(colors: [.blue, .purple], startPoint: .leading, endPoint: .trailing))
-                            .foregroundColor(.white)
-                            .cornerRadius(16)
-                            .shadow(radius: 5)
-                        }
-                    }
-                }
-                .padding(.horizontal)
-                
-                Text(selectedLanguage == .russian ? "В этой версии оплата производится вручную через администратора." : "In this version, payment is processed manually via administrator.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .multilineTextAlignment(.center)
-                    .padding(.top)
-                    .padding(.horizontal)
+            }
+        }
+        .onAppear {
+            if viewModel.isMax { selectedPlan = "Max" }
+            else if viewModel.isPro { selectedPlan = "Pro" }
+            else { selectedPlan = "Free" }
+            
+            withAnimation(.linear(duration: 4.0).repeatForever(autoreverses: false)) {
+                animateGradient = true
             }
         }
         .alert("\(selectedLanguage == .russian ? "Активация" : "Activate") \(selectedPlanForActivation)", isPresented: $showActivationAlert) {
@@ -176,19 +103,321 @@ struct SubscriptionView: View {
         } message: {
             Text(selectedLanguage == .russian ? "Напиши мне в Telegram @Vladik40perc, чтобы получить доступ. После оплаты я включу функции мгновенно." : "Write to me on Telegram @Vladik40perc to get access. I will enable features instantly after payment.")
         }
-        .onAppear {
-            if viewModel.isMax {
-                selectedPlan = "Max"
-            } else if viewModel.isPro {
-                selectedPlan = "Pro"
-            } else {
-                selectedPlan = "Free"
-            }
+    }
+    
+    func handlePlanAction() {
+        if selectedPlan == "Free" {
+            dismiss()
+        } else {
+            selectedPlanForActivation = selectedPlan == "Pro" ? "Nova Pro" : "Nova Max"
+            showActivationAlert = true
         }
     }
 }
 
-// --- КОМПОНЕНТЫ ---
+// MARK: - Components
+
+struct SubscriptionHeaderView: View {
+    let selectedLanguage: AppLanguage
+    let themeGradient: LinearGradient
+    @Binding var animateGradient: Bool
+    
+    var body: some View {
+        VStack(spacing: 8) {
+            ZStack {
+                Image(systemName: "sparkles")
+                    .font(.system(size: 50))
+                    .foregroundStyle(themeGradient)
+                    .opacity(0.3)
+                    .offset(x: -30, y: -10)
+                    .blur(radius: 5)
+                
+                Image(systemName: "sparkles")
+                    .font(.system(size: 64))
+                    .foregroundStyle(themeGradient)
+                    .symbolEffect(.bounce, value: animateGradient)
+            }
+            .padding(.bottom, 10)
+            
+            Text("Nova AI")
+                .font(.largeTitle)
+                .fontWeight(.black)
+                .overlay(
+                    LinearGradient(
+                        colors: [.primary, .primary.opacity(0.5), .primary],
+                        startPoint: animateGradient ? .topLeading : .bottomTrailing,
+                        endPoint: animateGradient ? .bottomTrailing : .topLeading
+                    )
+                    .mask(Text("Nova AI").font(.largeTitle).fontWeight(.black))
+                )
+            
+            Text(selectedLanguage == .russian ? "Разблокируйте полный потенциал nova.ai" : "Unlock full potential of nova.ai")
+                .font(.body)
+                .foregroundColor(.secondary)
+            
+            Text(selectedLanguage == .russian ? "Выберите подписку" : "Choose a subscription")
+                .font(.headline)
+                .padding(.top, 4)
+        }
+    }
+}
+
+struct CustomPlanPicker: View {
+    @Binding var selectedPlan: String
+    var animationNamespace: Namespace.ID
+    var themeColor: Color
+    var selectedLanguage: AppLanguage
+    
+    let plans = ["Free", "Pro", "Max"]
+    
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(plans, id: \.self) { plan in
+                ZStack {
+                    if selectedPlan == plan {
+                        Capsule()
+                            .fill(Color(UIColor.systemBackground))
+                            .shadow(color: .black.opacity(0.1), radius: 4, x: 0, y: 2)
+                            .matchedGeometryEffect(id: "ActiveTab", in: animationNamespace)
+                    }
+                    
+                    Text(plan)
+                        .font(.system(size: 16, weight: selectedPlan == plan ? .bold : .medium))
+                        .foregroundColor(selectedPlan == plan ? themeColor : .secondary)
+                        .padding(.vertical, 10)
+                }
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    withAnimation(.spring(response: 0.4, dampingFraction: 0.7)) {
+                        selectedPlan = plan
+                    }
+                }
+                .frame(maxWidth: .infinity)
+            }
+        }
+        .padding(4)
+        .background(Color(UIColor.secondarySystemBackground))
+        .clipShape(Capsule())
+        .padding(.horizontal, 40)
+    }
+}
+
+struct PlanCardView: View {
+    let plan: String
+    let selectedLanguage: AppLanguage
+    let themeGradient: LinearGradient
+    let themeColor: Color
+    let action: () -> Void
+    
+    var price: String {
+        switch plan {
+        case "Free": return selectedLanguage == .russian ? "0 ₽" : "$0"
+        case "Pro": return selectedLanguage == .russian ? "299 ₽" : "$2.99"
+        case "Max": return selectedLanguage == .russian ? "699 ₽" : "$6.99"
+        default: return ""
+        }
+    }
+    
+    var period: String {
+        selectedLanguage == .russian ? "/ месяц" : "/ month"
+    }
+    
+    var description: String {
+        switch plan {
+        case "Free": return selectedLanguage == .russian ? "Начни свой путь" : "Start your journey"
+        case "Pro": return selectedLanguage == .russian ? "Раскрой потенциал" : "Unlock your potential"
+        case "Max": return selectedLanguage == .russian ? "Максимум возможностей" : "Maximize productivity"
+        default: return ""
+        }
+    }
+    
+    var features: [String] {
+        switch plan {
+        case "Free":
+            return selectedLanguage == .russian ? 
+                ["Базовая модель Nova", "10 фактов памяти", "Текстовое общение"] :
+                ["Basic Nova Model", "10 Memory Facts", "Text Chat"]
+        case "Pro":
+            return selectedLanguage == .russian ?
+                ["GPT-5 Nano & Voice", "Поиск в интернете", "25 фактов памяти"] :
+                ["GPT-5 Nano & Voice", "Web Search", "25 Memory Facts"]
+        case "Max":
+            let baseFeatures = selectedLanguage == .russian ?
+                ["Всё из Nova Pro, плюс:", "GPT-5 Mini & DeepThink", "Deep Research (Alpha)", "Генерация картинок", "Анализ файлов"] :
+                ["Everything in Nova Pro, plus:", "GPT-5 Mini & DeepThink", "Deep Research (Alpha)", "Image Generation", "File Analysis"]
+            return baseFeatures
+        default:
+            return []
+        }
+    }
+    
+    var buttonText: String {
+        if plan == "Free" {
+            return selectedLanguage == .russian ? "Текущий план" : "Current Plan"
+        }
+        return selectedLanguage == .russian ? "Активировать \(plan)" : "Activate \(plan)"
+    }
+    
+    var body: some View {
+        VStack(spacing: 20) {
+            // Title & Price
+            VStack(spacing: 5) {
+                Text(plan.uppercased())
+                    .font(.caption)
+                    .fontWeight(.bold)
+                    .foregroundColor(themeColor)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 4)
+                    .background(themeColor.opacity(0.1))
+                    .clipShape(Capsule())
+                
+                HStack(alignment: .lastTextBaseline, spacing: 2) {
+                    Text(price)
+                        .font(.system(size: 42, weight: .bold))
+                        .foregroundColor(.primary)
+                    Text(period)
+                        .font(.callout)
+                        .foregroundColor(.secondary)
+                        .padding(.bottom, 4)
+                }
+                
+                Text(description)
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+            }
+            .padding(.top, 10)
+            
+            Divider()
+                .padding(.horizontal)
+            
+            // Features List
+            VStack(alignment: .leading, spacing: 12) {
+                ForEach(features, id: \.self) { feature in
+                    HStack(spacing: 12) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundColor(themeColor)
+                            .font(.system(size: 18))
+                        
+                        Text(feature)
+                            .font(.system(size: 16))
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 10)
+            
+            Spacer().frame(height: 10)
+            
+            // Action Button
+            Button(action: action) {
+                Text(buttonText)
+                    .font(.headline)
+                    .foregroundColor(.white)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 16)
+                    .background(themeGradient)
+                    .cornerRadius(16)
+                    .shadow(color: themeColor.opacity(0.4), radius: 8, x: 0, y: 4)
+            }
+        }
+        .padding(24)
+        .background(Color(UIColor.secondarySystemBackground))
+        .cornerRadius(24)
+        .overlay(
+            RoundedRectangle(cornerRadius: 24)
+                .stroke(themeColor.opacity(0.3), lineWidth: 1)
+        )
+        .shadow(color: Color.black.opacity(0.05), radius: 15, x: 0, y: 5)
+    }
+}
+
+struct DetailedComparisonView: View {
+    let selectedPlan: String
+    let selectedLanguage: AppLanguage
+    @State private var showProjectsInfo = false
+    
+    var body: some View {
+        VStack(spacing: 0) {
+            // Header
+            HStack(alignment: .bottom) {
+                Text(selectedLanguage == .russian ? "Функция" : "Feature")
+                    .font(.caption)
+                    .fontWeight(.bold)
+                    .foregroundColor(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                
+                // Only show columns if screen is wide enough, otherwise simplifying or keeping as is. 
+                // For simplicity, we keep the original 3 columns but highlight the selected one.
+                HStack(spacing: 15) {
+                    PlanHeader(text: "Free", selected: selectedPlan == "Free")
+                    PlanHeader(text: "Pro", selected: selectedPlan == "Pro")
+                    PlanHeader(text: "Max", selected: selectedPlan == "Max")
+                }
+            }
+            .padding(.horizontal)
+            .padding(.bottom, 10)
+            
+            Divider()
+            
+            VStack(spacing: 0) {
+                // Models
+                Group {
+                    ComparisonRow(title: "Nova v1-RLHF", free: true, pro: true, max: true, selectedPlan: selectedPlan)
+                    ComparisonRow(title: "Gemini Flash Lite", free: true, pro: true, max: true, selectedPlan: selectedPlan)
+                    ComparisonRow(title: "GPT-5 Nano", free: selectedLanguage == .russian ? "10/д" : "10/d", pro: "check", max: "check", selectedPlan: selectedPlan)
+                    ComparisonRow(title: "GPT-5 Mini", free: "minus", pro: selectedLanguage == .russian ? "100/д" : "100/d", max: "check", selectedPlan: selectedPlan)
+                    ComparisonRow(title: "Nova-v1-RP", free: selectedLanguage == .russian ? "5/д" : "5/d", pro: selectedLanguage == .russian ? "50/н" : "50/w", max: selectedLanguage == .russian ? "150/н" : "150/w", selectedPlan: selectedPlan)
+                    ComparisonRow(title: "Nova-v1-Pro", free: "minus", pro: selectedLanguage == .russian ? "60/н" : "60/w", max: selectedLanguage == .russian ? "200/н" : "200/w", selectedPlan: selectedPlan)
+                    ComparisonRow(title: "DeepThink", free: "minus", pro: "minus", max: selectedLanguage == .russian ? "30/д" : "30/d", selectedPlan: selectedPlan)
+                }
+                
+                // Capabilities
+                Group {
+                    ComparisonRow(title: selectedLanguage == .russian ? "Память (фактов)" : "Memory (facts)", free: "10", pro: "25", max: "50", selectedPlan: selectedPlan)
+                    ComparisonRow(
+                        title: selectedLanguage == .russian ? "Проекты" : "Projects",
+                        free: selectedLanguage == .russian ? "Ограниченно" : "Limited",
+                        pro: selectedLanguage == .russian ? "Расширено" : "Extended",
+                        max: "check",
+                        selectedPlan: selectedPlan,
+                        infoAction: { showProjectsInfo = true }
+                    )
+                    ComparisonRow(title: selectedLanguage == .russian ? "Загрузка изображений" : "Image Uploads", free: selectedLanguage == .russian ? "10/д" : "10/d", pro: selectedLanguage == .russian ? "35/д" : "35/d", max: selectedLanguage == .russian ? "75/д" : "75/d", selectedPlan: selectedPlan)
+                    ComparisonRow(title: selectedLanguage == .russian ? "Голосовое общение" : "Voice Chat", free: false, pro: true, max: true, selectedPlan: selectedPlan)
+                    ComparisonRow(title: selectedLanguage == .russian ? "Поиск в интернете" : "Web Search", free: false, pro: true, max: true, selectedPlan: selectedPlan)
+                }
+                
+                // Advanced
+                Group {
+                    ComparisonRow(title: selectedLanguage == .russian ? "Deep Research (Alpha)" : "Deep Research (Alpha)", free: "minus", pro: "minus", max: selectedLanguage == .russian ? "10/н" : "10/w", selectedPlan: selectedPlan)
+                    ComparisonRow(title: selectedLanguage == .russian ? "Генерация картинок" : "Image Generation", free: selectedLanguage == .russian ? "20/д" : "20/d", pro: "check", max: "check", selectedPlan: selectedPlan)
+                    ComparisonRow(title: selectedLanguage == .russian ? "Анализ файлов" : "File Analysis", free: false, pro: false, max: true, selectedPlan: selectedPlan)
+                }
+            }
+            .padding(.top, 10)
+        }
+        .padding()
+        .background(Color(UIColor.secondarySystemBackground))
+        .cornerRadius(16)
+        .sheet(isPresented: $showProjectsInfo) {
+            ProjectsInfoSheet(selectedPlan: selectedPlan, selectedLanguage: selectedLanguage)
+        }
+    }
+}
+
+struct PlanHeader: View {
+    let text: String
+    let selected: Bool
+    
+    var body: some View {
+        Text(text)
+            .font(.caption)
+            .fontWeight(.bold)
+            .foregroundColor(selected ? .primary : .secondary)
+            .frame(width: 45)
+            .multilineTextAlignment(.center)
+    }
+}
 
 struct ComparisonRow: View {
     let title: String
@@ -196,125 +425,156 @@ struct ComparisonRow: View {
     let pro: String
     let max: String
     let selectedPlan: String
+    let infoAction: (() -> Void)?
     
-    init(title: String, free: Bool, pro: Bool, max: Bool, selectedPlan: String) {
+    init(title: String, free: Bool, pro: Bool, max: Bool, selectedPlan: String, infoAction: (() -> Void)? = nil) {
         self.title = title
         self.free = free ? "check" : "minus"
         self.pro = pro ? "check" : "minus"
         self.max = max ? "check" : "minus"
         self.selectedPlan = selectedPlan
+        self.infoAction = infoAction
     }
     
-    init(title: String, free: String, pro: String, max: String, selectedPlan: String) {
+    init(title: String, free: String, pro: String, max: String, selectedPlan: String, infoAction: (() -> Void)? = nil) {
         self.title = title
         self.free = free
         self.pro = pro
         self.max = max
         self.selectedPlan = selectedPlan
+        self.infoAction = infoAction
     }
     
     var body: some View {
-        HStack {
-            Text(title)
-                .font(.system(size: 16, weight: .medium))
-                .foregroundColor(.primary)
+        VStack(spacing: 0) {
+            HStack {
+                HStack(spacing: 6) {
+                    Text(title)
+                        .font(.system(size: 14))
+                        .foregroundColor(.primary)
+                    
+                    if let infoAction {
+                        Button(action: infoAction) {
+                            Image(systemName: "questionmark.circle")
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundColor(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .fixedSize(horizontal: false, vertical: true)
-            
-            HStack(spacing: 20) {
-                StatusIcon(status: free, color: .gray)
-                StatusIcon(status: pro, color: .blue)
-                StatusIcon(status: max, color: .purple)
+                .padding(.vertical, 12)
+                
+                HStack(spacing: 15) {
+                    StatusIcon(status: free, highlighted: selectedPlan == "Free")
+                    StatusIcon(status: pro, highlighted: selectedPlan == "Pro")
+                    StatusIcon(status: max, highlighted: selectedPlan == "Max")
+                }
             }
-        }
-    }
-}
-
-struct HeaderTitle: View {
-    let text: String
-    let color: Color
-    let isSelected: Bool
-    
-    var body: some View {
-        Text(text)
-            .font(.system(size: 14, weight: .bold))
-            .foregroundColor(color)
-            .frame(width: 50)
-            .multilineTextAlignment(.center)
-            .padding(.vertical, 4)
-    }
-}
-
-struct ColumnBackground: View {
-    let selectedPlan: String
-    
-    var body: some View {
-        HStack {
-            Spacer()
-            HStack(spacing: 20) {
-                Rectangle()
-                    .fill(selectedPlan == "Free" ? Color.gray.opacity(0.15) : Color.clear)
-                    .frame(width: 50)
-                Rectangle()
-                    .fill(selectedPlan == "Pro" ? Color.blue.opacity(0.15) : Color.clear)
-                    .frame(width: 50)
-                Rectangle()
-                    .fill(selectedPlan == "Max" ? Color.purple.opacity(0.15) : Color.clear)
-                    .frame(width: 50)
-            }
-        }
-        .padding(.horizontal)
-    }
-}
-
-struct PlanButton: View {
-    let title: String
-    let color: Color
-    @Binding var selectedPlan: String
-    
-    var body: some View {
-        Button(action: {
-            withAnimation {
-                selectedPlan = title
-            }
-        }) {
-            Text(title)
-                .font(.headline)
-                .fontWeight(.bold)
-                .foregroundColor(selectedPlan == title ? color : .secondary)
-                .padding(.vertical, 8)
-                .padding(.horizontal, 20)
-                .background(selectedPlan == title ? color.opacity(0.15) : Color.clear)
-                .cornerRadius(20)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 20)
-                        .stroke(selectedPlan == title ? color : Color.secondary.opacity(0.2), lineWidth: 1)
-                )
+            Divider().opacity(0.5)
         }
     }
 }
 
 struct StatusIcon: View {
     let status: String
-    let color: Color
+    let highlighted: Bool
     
     var body: some View {
-        if status == "check" {
-            Image(systemName: "checkmark")
-                .font(.system(size: 18, weight: .bold))
-                .foregroundColor(color)
-                .frame(width: 50)
-        } else if status == "minus" {
-            Image(systemName: "minus")
-                .font(.system(size: 18, weight: .regular))
-                .foregroundColor(.gray.opacity(0.3))
-                .frame(width: 50)
-        } else {
-            Text(status)
-                .font(.system(size: 12, weight: .bold))
-                .foregroundColor(color)
-                .frame(width: 50)
-                .multilineTextAlignment(.center)
+        Group {
+            if status == "check" {
+                Image(systemName: "checkmark")
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundColor(highlighted ? .green : .gray)
+            } else if status == "minus" {
+                Image(systemName: "minus")
+                    .font(.system(size: 14))
+                    .foregroundColor(.gray.opacity(0.3))
+            } else {
+                Text(status)
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundColor(highlighted ? .primary : .secondary)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.6)
+            }
         }
+        .frame(width: 45)
+    }
+}
+
+struct ProjectsInfoSheet: View {
+    @Environment(\.dismiss) var dismiss
+    let selectedPlan: String
+    let selectedLanguage: AppLanguage
+    
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 16) {
+                HStack {
+                    Text(selectedLanguage == .russian ? "Проекты" : "Projects")
+                        .font(.headline)
+                    Spacer()
+                    Button(action: { dismiss() }) {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.title3)
+                            .foregroundColor(.secondary)
+                    }
+                }
+                
+                Text(selectedLanguage == .russian
+                     ? "Детальная таблица возможностей проекта."
+                     : "Detailed comparison for project features.")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                
+                ProjectsComparisonTable(selectedPlan: selectedPlan, selectedLanguage: selectedLanguage)
+                
+                Spacer()
+            }
+            .padding()
+            .toolbar(.hidden, for: .navigationBar)
+        }
+    }
+}
+
+struct ProjectsComparisonTable: View {
+    let selectedPlan: String
+    let selectedLanguage: AppLanguage
+    
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(alignment: .bottom) {
+                Text(selectedLanguage == .russian ? "Функция" : "Feature")
+                    .font(.caption)
+                    .fontWeight(.bold)
+                    .foregroundColor(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                
+                HStack(spacing: 15) {
+                    PlanHeader(text: "Free", selected: selectedPlan == "Free")
+                    PlanHeader(text: "Pro", selected: selectedPlan == "Pro")
+                    PlanHeader(text: "Max", selected: selectedPlan == "Max")
+                }
+            }
+            .padding(.horizontal)
+            .padding(.bottom, 10)
+            
+            Divider()
+            
+            VStack(spacing: 0) {
+                ComparisonRow(title: selectedLanguage == .russian ? "Доступ к проектам" : "Project access", free: true, pro: true, max: true, selectedPlan: selectedPlan)
+                ComparisonRow(title: selectedLanguage == .russian ? "Лимит проектов" : "Project limit", free: "1", pro: "5", max: "∞", selectedPlan: selectedPlan)
+                ComparisonRow(title: selectedLanguage == .russian ? "База знаний (20 файлов)" : "Knowledge base (20 files)", free: "minus", pro: "minus", max: "check", selectedPlan: selectedPlan)
+                ComparisonRow(title: selectedLanguage == .russian ? "Системные инструкции" : "Project brain", free: "minus", pro: "minus", max: "check", selectedPlan: selectedPlan)
+                ComparisonRow(title: selectedLanguage == .russian ? "Память проекта" : "Project memory", free: true, pro: true, max: true, selectedPlan: selectedPlan)
+                ComparisonRow(title: selectedLanguage == .russian ? "Изоляция памяти" : "Memory isolation", free: true, pro: true, max: true, selectedPlan: selectedPlan)
+            }
+            .padding(.top, 10)
+        }
+        .padding()
+        .background(Color(UIColor.secondarySystemBackground))
+        .cornerRadius(16)
     }
 }

@@ -262,7 +262,21 @@ class VoiceChatViewModel: NSObject, ObservableObject, SFSpeechRecognizerDelegate
     private func requestPermissions(completion: @escaping (Bool) -> Void) {
         SFSpeechRecognizer.requestAuthorization { status in
             DispatchQueue.main.async {
-                completion(status == .authorized)
+                guard status == .authorized else {
+                    self.errorMessage = "Нет разрешения на распознавание речи."
+                    completion(false)
+                    return
+                }
+                AVAudioSession.sharedInstance().requestRecordPermission { allowed in
+                    DispatchQueue.main.async {
+                        if !allowed {
+                            self.errorMessage = "Нет доступа к микрофону."
+                            completion(false)
+                            return
+                        }
+                        completion(true)
+                    }
+                }
             }
         }
     }

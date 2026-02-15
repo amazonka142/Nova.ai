@@ -35,6 +35,7 @@
 		639958672F2768A8006B4ACD /* GoogleSignInSwift in Frameworks */ = {isa = PBXBuildFile; productRef = 639958662F2768A8006B4ACD /* GoogleSignInSwift */; };
 		639958702F278B63006B4ACD /* MarkdownUI in Frameworks */ = {isa = PBXBuildFile; productRef = 6399586F2F278B63006B4ACD /* MarkdownUI */; };
 		639958752F27E5C5006B4ACD /* SwiftSoup in Frameworks */ = {isa = PBXBuildFile; productRef = 639958742F27E5C5006B4ACD /* SwiftSoup */; };
+		63A9B1C22F9A6B3C00A1B2C3 /* ZIPFoundation in Frameworks */ = {isa = PBXBuildFile; productRef = 63A9B1C12F9A6B3C00A1B2C3 /* ZIPFoundation */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -82,6 +83,7 @@
 				639945BB2F261B810018953A /* FirebaseAnalyticsCore in Frameworks */,
 				639945D22F261C880018953A /* FirebaseFunctions in Frameworks */,
 				639945D02F261C860018953A /* FirebaseFirestoreCombine-Community in Frameworks */,
+				63A9B1C22F9A6B3C00A1B2C3 /* ZIPFoundation in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -160,6 +162,7 @@
 				639958662F2768A8006B4ACD /* GoogleSignInSwift */,
 				6399586F2F278B63006B4ACD /* MarkdownUI */,
 				639958742F27E5C5006B4ACD /* SwiftSoup */,
+				63A9B1C12F9A6B3C00A1B2C3 /* ZIPFoundation */,
 			);
 			productName = Nova.ai;
 			productReference = 63B0686A2F253DC0009D3E94 /* Nova.ai.app */;
@@ -194,6 +197,7 @@
 				639958632F2768A8006B4ACD /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */,
 				6399586E2F278B63006B4ACD /* XCRemoteSwiftPackageReference "MarkdownUI" */,
 				639958732F27E5C5006B4ACD /* XCRemoteSwiftPackageReference "SwiftSoup" */,
+				63A9B1C02F9A6B3C00A1B2C3 /* XCRemoteSwiftPackageReference "ZIPFoundation" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 63B0686B2F253DC0009D3E94 /* Products */;
@@ -353,7 +357,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 8506;
+				CURRENT_PROJECT_VERSION = 8512;
 				DEVELOPMENT_TEAM = 6X2XW5692U;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -372,7 +376,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.2026.009;
+				MARKETING_VERSION = 1.2026.012;
 				PRODUCT_BUNDLE_IDENTIFIER = "novaos.Nova-ai";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -391,7 +395,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 8506;
+				CURRENT_PROJECT_VERSION = 8512;
 				DEVELOPMENT_TEAM = 6X2XW5692U;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -410,7 +414,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.2026.009;
+				MARKETING_VERSION = 1.2026.012;
 				PRODUCT_BUNDLE_IDENTIFIER = "novaos.Nova-ai";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -477,6 +481,14 @@
 			requirement = {
 				kind = upToNextMajorVersion;
 				minimumVersion = 2.11.3;
+			};
+		};
+		63A9B1C02F9A6B3C00A1B2C3 /* XCRemoteSwiftPackageReference "ZIPFoundation" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/weichsel/ZIPFoundation";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 0.9.0;
 			};
 		};
 /* End XCRemoteSwiftPackageReference section */
@@ -621,6 +633,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 639958732F27E5C5006B4ACD /* XCRemoteSwiftPackageReference "SwiftSoup" */;
 			productName = SwiftSoup;
+		};
+		63A9B1C12F9A6B3C00A1B2C3 /* ZIPFoundation */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 63A9B1C02F9A6B3C00A1B2C3 /* XCRemoteSwiftPackageReference "ZIPFoundation" */;
+			productName = ZIPFoundation;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

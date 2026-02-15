@@ -6,7 +6,7 @@ struct WebView: UIViewRepresentable {
     
     func makeUIView(context: Context) -> WKWebView {
         let preferences = WKWebpagePreferences()
-        preferences.allowsContentJavaScript = true
+        preferences.allowsContentJavaScript = false
         
         let config = WKWebViewConfiguration()
         config.defaultWebpagePreferences = preferences
