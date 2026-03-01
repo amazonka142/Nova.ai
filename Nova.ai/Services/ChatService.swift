@@ -99,36 +99,21 @@ final class PollinationsChatService: ChatServiceProtocol, Sendable {
                         
                         // Re-use logic for body construction, but add "stream": true
                         if hasImages {
-                            // Vision Strategy
-                            let isOpenAI = model.lowercased().contains("gpt") || model.lowercased().contains("openai")
-                            
-                            if !isOpenAI {
-                                // Collapse for Gemini/Mistral (Goldfish Fix for Vision)
-                                var promptBuilder = ""
-                                let systemMsg = messages.first(where: { $0.role == "system" })?.content ?? "You are Nova."
-                                promptBuilder += "System: \(systemMsg)\n\n"
-                                for msg in messages where msg.role != "system" {
-                                    promptBuilder += "\(msg.role == "user" ? "User" : "Nova"): \(msg.content)\n"
-                                }
-                                promptBuilder += "Nova:"
-                                
-                                // Some non-OpenAI providers stringify structured content as "[object Object]".
-                                // Fall back to pure text for these models.
-                                let singleMessage = API_Message(role: "user", content: promptBuilder, imageData: nil)
-                                
-                                struct RequestBody: Encodable { let messages: [API_Message]; let model: String; let jsonMode: Bool; let stream: Bool }
-                                let requestData = RequestBody(messages: [singleMessage], model: model, jsonMode: false, stream: true)
-                                request.httpBody = try JSONEncoder().encode(requestData)
-                            } else {
-                                struct RequestBody: Encodable {
-                                    let messages: [API_Message]
-                                    let model: String
-                                    let jsonMode: Bool
-                                    let stream: Bool
-                                }
-                                let requestData = RequestBody(messages: messages, model: model, jsonMode: false, stream: true)
-                                request.httpBody = try JSONEncoder().encode(requestData)
+                            // Pollinations gateway can stringify structured multimodal content as "[object Object]".
+                            // Use a pure-text fallback for all models to keep responses reliable.
+                            var promptBuilder = ""
+                            let systemMsg = messages.first(where: { $0.role == "system" })?.content ?? "You are Nova."
+                            promptBuilder += "System: \(systemMsg)\n\n"
+                            for msg in messages where msg.role != "system" {
+                                promptBuilder += "\(msg.role == "user" ? "User" : "Nova"): \(msg.content)\n"
                             }
+                            promptBuilder += "Nova:"
+                            
+                            let singleMessage = API_Message(role: "user", content: promptBuilder, imageData: nil)
+                            
+                            struct RequestBody: Encodable { let messages: [API_Message]; let model: String; let jsonMode: Bool; let stream: Bool }
+                            let requestData = RequestBody(messages: [singleMessage], model: model, jsonMode: false, stream: true)
+                            request.httpBody = try JSONEncoder().encode(requestData)
                         } else {
                             // Text Strategy (Goldfish Fix)
                             var promptBuilder = ""
@@ -224,30 +209,21 @@ final class PollinationsChatService: ChatServiceProtocol, Sendable {
         
         // Handle Request Body Construction
         if hasImages {
-            // STRATEGY A: Structured Messages (Vision)
-            let isOpenAI = model.lowercased().contains("gpt") || model.lowercased().contains("openai")
-            
-            if !isOpenAI {
-                var promptBuilder = ""
-                let systemMsg = messages.first(where: { $0.role == "system" })?.content ?? "You are Nova."
-                promptBuilder += "System: \(systemMsg)\n\n"
-                for msg in messages where msg.role != "system" {
-                    promptBuilder += "\(msg.role == "user" ? "User" : "Nova"): \(msg.content)\n"
-                }
-                promptBuilder += "Nova:"
-                
-                // Some non-OpenAI providers stringify structured content as "[object Object]".
-                // Fall back to pure text for these models.
-                let singleMessage = API_Message(role: "user", content: promptBuilder, imageData: nil)
-                
-                struct RequestBody: Encodable { let messages: [API_Message]; let model: String; let jsonMode: Bool }
-                let requestData = RequestBody(messages: [singleMessage], model: model, jsonMode: false)
-                request.httpBody = try JSONEncoder().encode(requestData)
-            } else {
-                struct RequestBody: Encodable { let messages: [API_Message]; let model: String; let jsonMode: Bool }
-                let requestData = RequestBody(messages: messages, model: model, jsonMode: false)
-                request.httpBody = try JSONEncoder().encode(requestData)
+            // Pollinations gateway can stringify structured multimodal content as "[object Object]".
+            // Use a pure-text fallback for all models to keep responses reliable.
+            var promptBuilder = ""
+            let systemMsg = messages.first(where: { $0.role == "system" })?.content ?? "You are Nova."
+            promptBuilder += "System: \(systemMsg)\n\n"
+            for msg in messages where msg.role != "system" {
+                promptBuilder += "\(msg.role == "user" ? "User" : "Nova"): \(msg.content)\n"
             }
+            promptBuilder += "Nova:"
+            
+            let singleMessage = API_Message(role: "user", content: promptBuilder, imageData: nil)
+            
+            struct RequestBody: Encodable { let messages: [API_Message]; let model: String; let jsonMode: Bool }
+            let requestData = RequestBody(messages: [singleMessage], model: model, jsonMode: false)
+            request.httpBody = try JSONEncoder().encode(requestData)
             
         } else {
             // STRATEGY B: Manual Prompt (Text Only) - The "Goldfish Fix"
