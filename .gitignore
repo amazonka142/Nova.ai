@@ -1,6 +1,10 @@
 # macOS
 .DS_Store
 
+# Xcode user-specific data
+**/xcuserdata/
+**/*.xcuserstate
+
 # Local env files
 .env
 backend/.env
