@@ -5,6 +5,7 @@
 .env
 backend/.env
 Nova.ai/GoogleService-Info.plist
+Nova-ai-Info.plist
 .env.example
 GoogleService-Info.plist.example
 firebase.json
