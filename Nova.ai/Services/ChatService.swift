@@ -112,8 +112,9 @@ final class PollinationsChatService: ChatServiceProtocol, Sendable {
                                 }
                                 promptBuilder += "Nova:"
                                 
-                                let lastImage = messages.last(where: { $0.imageData != nil })?.imageData
-                                let singleMessage = API_Message(role: "user", content: promptBuilder, imageData: lastImage)
+                                // Some non-OpenAI providers stringify structured content as "[object Object]".
+                                // Fall back to pure text for these models.
+                                let singleMessage = API_Message(role: "user", content: promptBuilder, imageData: nil)
                                 
                                 struct RequestBody: Encodable { let messages: [API_Message]; let model: String; let jsonMode: Bool; let stream: Bool }
                                 let requestData = RequestBody(messages: [singleMessage], model: model, jsonMode: false, stream: true)
@@ -235,8 +236,9 @@ final class PollinationsChatService: ChatServiceProtocol, Sendable {
                 }
                 promptBuilder += "Nova:"
                 
-                let lastImage = messages.last(where: { $0.imageData != nil })?.imageData
-                let singleMessage = API_Message(role: "user", content: promptBuilder, imageData: lastImage)
+                // Some non-OpenAI providers stringify structured content as "[object Object]".
+                // Fall back to pure text for these models.
+                let singleMessage = API_Message(role: "user", content: promptBuilder, imageData: nil)
                 
                 struct RequestBody: Encodable { let messages: [API_Message]; let model: String; let jsonMode: Bool }
                 let requestData = RequestBody(messages: [singleMessage], model: model, jsonMode: false)
