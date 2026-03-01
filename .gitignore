@@ -5,6 +5,10 @@
 .env
 backend/.env
 Nova.ai/GoogleService-Info.plist
+.env.example
+GoogleService-Info.plist.example
+firebase.json
+docker-compose.yml
 
 # Python backend artifacts
 backend/.venv/
