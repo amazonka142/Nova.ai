@@ -2208,6 +2208,8 @@ final class ChatViewModel: ObservableObject {
                 let newPro = data["isPro"] as? Bool ?? false
                 let newMax = data["isMax"] as? Bool ?? false
                 let note = data["adminNote"] as? String
+                let wasProLocally = self.isPro
+                let wasMaxLocally = self.isMax
                 
                 // Устанавливаем текущее значение из базы (пока идет проверка времени)
                 self.adminNote = note
@@ -2215,6 +2217,8 @@ final class ChatViewModel: ObservableObject {
                 // Проверка времени через сеть (защита от смены даты на устройстве)
                 Task {
                     let now = await self.fetchNetworkDate()
+                    let isActiveNow = newPro || newMax
+                    let wasActiveLocally = wasProLocally || wasMaxLocally
                     
                     // Автоматическая проверка срока действия подписки
                     if let expirationTimestamp = data["subscriptionExpirationDate"] as? Timestamp {
@@ -2224,13 +2228,26 @@ final class ChatViewModel: ObservableObject {
                         formatter.dateStyle = .medium
                         
                         if now > expirationDate {
-                            // Подписка истекла — отключаем автоматически
-                            if newPro || newMax {
-                                self.disableExpiredSubscription(userId: userId, dateStr: formatter.string(from: expirationDate))
-                                self.isPro = false
-                                self.isMax = false
+                            // Если админ вручную заново включил подписку (false -> true),
+                            // автоматически продлеваем на месяц вместо мгновенного отката в false.
+                            if isActiveNow {
+                                if !wasActiveLocally {
+                                    if let renewedDate = Calendar.current.date(byAdding: .month, value: 1, to: now) {
+                                        self.updateSubscriptionDate(userId: userId, date: renewedDate)
+                                        self.adminNote = "Активна до \(formatter.string(from: renewedDate))"
+                                    } else {
+                                        self.adminNote = "Активна до \(formatter.string(from: now))"
+                                    }
+                                } else {
+                                    // Подписка действительно просрочена — отключаем автоматически.
+                                    self.disableExpiredSubscription(userId: userId, dateStr: formatter.string(from: expirationDate))
+                                    self.isPro = false
+                                    self.isMax = false
+                                    self.adminNote = "Истекла \(formatter.string(from: expirationDate))"
+                                }
+                            } else {
+                                self.adminNote = "Истекла \(formatter.string(from: expirationDate))"
                             }
-                            self.adminNote = "Истекла \(formatter.string(from: expirationDate))"
                         } else {
                             // Подписка активна — показываем дату
                             self.adminNote = "Активна до \(formatter.string(from: expirationDate))"
@@ -2238,15 +2255,17 @@ final class ChatViewModel: ObservableObject {
                     } else {
                         // Даты нет. Если подписка включена (админом) — значит это новая активация.
                         // Автоматически ставим дату истечения через 1 месяц.
-                        if newPro || newMax {
+                        if isActiveNow {
                             // Используем сетевое время для расчета даты окончания
-                            let newDate = Calendar.current.date(byAdding: .month, value: 1, to: now)!
-                            self.updateSubscriptionDate(userId: userId, date: newDate)
-                            
                             let formatter = DateFormatter()
                             formatter.locale = Locale(identifier: "ru_RU")
                             formatter.dateStyle = .medium
-                            self.adminNote = "Активна до \(formatter.string(from: newDate))"
+                            if let newDate = Calendar.current.date(byAdding: .month, value: 1, to: now) {
+                                self.updateSubscriptionDate(userId: userId, date: newDate)
+                                self.adminNote = "Активна до \(formatter.string(from: newDate))"
+                            } else {
+                                self.adminNote = "Активна до \(formatter.string(from: now))"
+                            }
                         }
                     }
                 }
