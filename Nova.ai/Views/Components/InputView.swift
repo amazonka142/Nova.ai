@@ -110,7 +110,7 @@ struct InputView: View {
                             self.cachedPreviewImage = UIImage(data: data)
                         }
                     }
-                    .onChange(of: attachmentData) { newData in
+                    .onChange(of: attachmentData) { _, newData in
                         if let data = newData {
                             self.cachedPreviewImage = UIImage(data: data)
                         } else {

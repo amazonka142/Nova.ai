@@ -258,6 +258,14 @@ class VoiceChatViewModel: NSObject, ObservableObject, SFSpeechRecognizerDelegate
             self.audioLevel = 1.3
         }
     }
+
+    private func requestMicrophonePermission(_ completion: @escaping (Bool) -> Void) {
+        if #available(iOS 17.0, *) {
+            AVAudioApplication.requestRecordPermission(completionHandler: completion)
+        } else {
+            AVAudioSession.sharedInstance().requestRecordPermission(completion)
+        }
+    }
     
     private func requestPermissions(completion: @escaping (Bool) -> Void) {
         SFSpeechRecognizer.requestAuthorization { status in
@@ -267,7 +275,7 @@ class VoiceChatViewModel: NSObject, ObservableObject, SFSpeechRecognizerDelegate
                     completion(false)
                     return
                 }
-                AVAudioSession.sharedInstance().requestRecordPermission { allowed in
+                self.requestMicrophonePermission { allowed in
                     DispatchQueue.main.async {
                         if !allowed {
                             self.errorMessage = "Нет доступа к микрофону."

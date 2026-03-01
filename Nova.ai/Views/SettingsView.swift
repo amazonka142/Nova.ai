@@ -274,7 +274,7 @@ struct SettingsView: View {
             .sheet(isPresented: $showAuthView) {
                 AuthenticationView(viewModel: viewModel)
             }
-            .onChange(of: viewModel.userSession?.uid) { _ in
+            .onChange(of: viewModel.userSession?.uid) { _, _ in
                 if let user = viewModel.userSession, !user.isAnonymous {
                     showAuthView = false
                 }
@@ -298,7 +298,7 @@ struct SettingsView: View {
                 Button(selectedLanguage == .russian ? "Отмена" : "Cancel", role: .cancel) { }
             }
             .photosPicker(isPresented: $showPhotoPicker, selection: $selectedProfilePhotoItem, matching: .images)
-            .onChange(of: selectedProfilePhotoItem) { newItem in
+            .onChange(of: selectedProfilePhotoItem) { _, newItem in
                 Task {
                     await viewModel.updateUserProfilePhoto(item: newItem)
                 }

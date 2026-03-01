@@ -165,10 +165,10 @@ struct SidebarView: View {
             .onAppear {
                 updateSearchExpansion()
             }
-            .onChange(of: isSearchFocused) { _ in
+            .onChange(of: isSearchFocused) { _, _ in
                 updateSearchExpansion()
             }
-            .onChange(of: searchText) { _ in
+            .onChange(of: searchText) { _, _ in
                 updateSearchExpansion()
             }
             

@@ -88,7 +88,7 @@ struct ContentView: View {
         .onAppear {
             viewModel.setContext(modelContext)
         }
-        .onChange(of: isMenuOpen) { open in
+        .onChange(of: isMenuOpen) { _, open in
             if !open {
                 withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
                     isSidebarExpanded = false

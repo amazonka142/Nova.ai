@@ -262,6 +262,14 @@ final class ChatViewModel: ObservableObject {
     func toggleVoiceInput() {
         isVoiceModePresented = true
     }
+
+    private func requestMicrophonePermission(_ completion: @escaping (Bool) -> Void) {
+        if #available(iOS 17.0, *) {
+            AVAudioApplication.requestRecordPermission(completionHandler: completion)
+        } else {
+            AVAudioSession.sharedInstance().requestRecordPermission(completion)
+        }
+    }
     
     private func startRecording() {
         if audioEngine.isRunning {
@@ -279,7 +287,7 @@ final class ChatViewModel: ObservableObject {
                     return
                 }
                 
-                AVAudioSession.sharedInstance().requestRecordPermission { allowed in
+                self.requestMicrophonePermission { allowed in
                     DispatchQueue.main.async {
                         guard allowed else {
                             self.errorMessage = "Нет доступа к микрофону. Пожалуйста, разрешите доступ в настройках."
@@ -1199,13 +1207,28 @@ final class ChatViewModel: ObservableObject {
                latestVersion.compare(currentVersion, options: .numeric) == .orderedDescending {
                 
                 let changelog = data["changelog"] as? String ?? "Исправления ошибок и улучшения производительности."
-                let url = data["download_url"] as? String ?? "https://t.me/Vladik40perc"
+                let url = sanitizeUpdateURLString(data["download_url"] as? String)
                 
                 DispatchQueue.main.async {
                     self.appUpdate = AppUpdate(version: latestVersion, changelog: changelog, downloadURL: url)
                 }
             }
         }
+    }
+
+    func validatedUpdateURL(from rawValue: String) -> URL? {
+        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let url = URL(string: trimmed) else { return nil }
+        guard url.scheme?.lowercased() == "https", let host = url.host?.lowercased() else { return nil }
+        let allowedHosts = ["github.com", "raw.githubusercontent.com", "testflight.apple.com", "apps.apple.com", "t.me", "telegram.me"]
+        let isAllowedHost = allowedHosts.contains(where: { host == $0 || host.hasSuffix(".\($0)") })
+        return isAllowedHost ? url : nil
+    }
+
+    private func sanitizeUpdateURLString(_ candidate: String?) -> String {
+        let fallback = "https://t.me/Vladik40perc"
+        guard let candidate, let url = validatedUpdateURL(from: candidate) else { return fallback }
+        return url.absoluteString
     }
     
     func startDeepResearch(for messageId: UUID) {
@@ -1388,12 +1411,14 @@ final class ChatViewModel: ObservableObject {
                     
                     gatheredKnowledge += "\n\n=== ИТЕРАЦИЯ \(iteration) ===\n\(newFacts)"
                     searchQueries.append(contentsOf: newQueries)
+                    let factsForLog = newFacts
+                    let queriesForLog = newQueries
                     
                     await MainActor.run {
                         guard var current = self.researchStates[messageId] else { return }
-                        current.logs.append("🧠 Мысли: \(newFacts.prefix(100))...")
-                        if !newQueries.isEmpty {
-                            current.logs.append("🆕 Новые векторы: \(newQueries.joined(separator: ", "))")
+                        current.logs.append("🧠 Мысли: \(factsForLog.prefix(100))...")
+                        if !queriesForLog.isEmpty {
+                            current.logs.append("🆕 Новые векторы: \(queriesForLog.joined(separator: ", "))")
                         }
                         self.researchStates[messageId] = current
                     }
@@ -1753,13 +1778,13 @@ final class ChatViewModel: ObservableObject {
     }
     
     private func extractTextFromDocx(url: URL) throws -> String? {
-        guard let archive = Archive(url: url, accessMode: .read) else { return nil }
+        let archive = try Archive(url: url, accessMode: .read)
         guard let xml = try readZipEntryText(archive: archive, path: "word/document.xml") else { return nil }
         return stripXMLTags(from: xml)
     }
     
     private func extractTextFromPptx(url: URL) throws -> String? {
-        guard let archive = Archive(url: url, accessMode: .read) else { return nil }
+        let archive = try Archive(url: url, accessMode: .read)
         let slides = archive.filter { entry in
             entry.path.hasPrefix("ppt/slides/slide") && entry.path.hasSuffix(".xml")
         }.sorted { $0.path < $1.path }
@@ -1859,7 +1884,7 @@ final class ChatViewModel: ObservableObject {
         
         if let user = userSession {
             let safeId = session.ensureUUID().uuidString
-            db.collection("users").document(user.uid).collection("chats").document(safeId).delete()
+            deleteChatAndMessagesInFirestore(userId: user.uid, chatId: safeId)
         }
         
         if currentSession.id == session.id {
@@ -1908,7 +1933,7 @@ final class ChatViewModel: ObservableObject {
             if let user = userSession {
                 for session in sessions {
                     let safeId = session.ensureUUID().uuidString
-                    db.collection("users").document(user.uid).collection("chats").document(safeId).delete()
+                    deleteChatAndMessagesInFirestore(userId: user.uid, chatId: safeId)
                 }
             }
             
@@ -1929,6 +1954,41 @@ final class ChatViewModel: ObservableObject {
     
     func persistChanges() {
         saveContext()
+    }
+
+    private func deleteChatAndMessagesInFirestore(userId: String, chatId: String) {
+        let chatRef = db.collection("users").document(userId).collection("chats").document(chatId)
+        deleteMessagesBatch(in: chatRef) { [weak self] error in
+            guard let error else { return }
+            print("Firestore chat deletion failed (\(chatId)): \(error)")
+            Task { @MainActor in
+                self?.errorMessage = "Не удалось удалить чат из облака: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    // Firestore doesn't cascade-delete subcollections. Remove message docs first, then delete chat doc.
+    private func deleteMessagesBatch(in chatRef: DocumentReference, completion: @escaping (Error?) -> Void) {
+        chatRef.collection("messages").limit(to: 200).getDocuments { [weak self] snapshot, error in
+            if let error {
+                completion(error)
+                return
+            }
+            guard let documents = snapshot?.documents, !documents.isEmpty else {
+                chatRef.delete(completion: completion)
+                return
+            }
+
+            let batch = self?.db.batch() ?? Firestore.firestore().batch()
+            documents.forEach { batch.deleteDocument($0.reference) }
+            batch.commit { error in
+                if let error {
+                    completion(error)
+                    return
+                }
+                self?.deleteMessagesBatch(in: chatRef, completion: completion)
+            }
+        }
     }
     
     // MARK: - Profile Management

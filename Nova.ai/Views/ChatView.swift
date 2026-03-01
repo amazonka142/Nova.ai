@@ -68,7 +68,7 @@ struct ChatView: View {
         }
         .alert(selectedLanguage == .russian ? "Доступна новая версия" : "New version available", isPresented: isUpdateAvailable, presenting: viewModel.appUpdate) { update in
             Button(selectedLanguage == .russian ? "Скачать обновление" : "Download Update") {
-                if let url = URL(string: update.downloadURL) {
+                if let url = viewModel.validatedUpdateURL(from: update.downloadURL) {
                     UIApplication.shared.open(url)
                 }
             }
@@ -158,11 +158,11 @@ struct ChatView: View {
             .onAppear {
                 refreshSortedMessages()
             }
-            .onChange(of: viewModel.currentSession.messages.map(\.id)) { _ in
+            .onChange(of: viewModel.currentSession.messages.map(\.id)) { _, _ in
                 refreshSortedMessages()
                 scrollToBottom(proxy: proxy)
             }
-            .onChange(of: viewModel.isLoading) { loading in
+            .onChange(of: viewModel.isLoading) { _, loading in
                 if loading { scrollToBottom(proxy: proxy) }
             }
         }

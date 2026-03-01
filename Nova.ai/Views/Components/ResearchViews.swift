@@ -346,10 +346,18 @@ struct ResearchReportView: View {
                         .font(.headline)
                     
                     ForEach(report.sources) { source in
-                        Link(destination: URL(string: source.url) ?? URL(string: "https://google.com")!) {
+                        if let destination = URL(string: source.url),
+                           let scheme = destination.scheme?.lowercased(),
+                           ["http", "https"].contains(scheme) {
+                            Link(destination: destination) {
+                                Text("• \(source.title)")
+                                    .font(.footnote)
+                                    .foregroundColor(.blue)
+                            }
+                        } else {
                             Text("• \(source.title)")
                                 .font(.footnote)
-                                .foregroundColor(.blue)
+                                .foregroundColor(.secondary)
                         }
                     }
                 }
