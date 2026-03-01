@@ -69,7 +69,13 @@ final class PollinationsChatService: ChatServiceProtocol, Sendable {
     // Pollinations Text API Endpoint
     // Updated based on reference: https://gen.pollinations.ai/v1/chat/completions
     private let baseURL = URL(string: "https://gen.pollinations.ai/v1/chat/completions")!
-    private let apiKey = "sk_a0WCZXH45qpVSanO0fOX1FQOLhRkOFAL"
+    
+    private func requireAPIKey() throws -> String {
+        guard let apiKey = AppSecrets.pollinationsAPIKey else {
+            throw URLError(.userAuthenticationRequired)
+        }
+        return apiKey
+    }
     
     // ... sendMessage implementation ...
     
@@ -80,6 +86,7 @@ final class PollinationsChatService: ChatServiceProtocol, Sendable {
                 // Цикл повторных попыток (до 3 раз)
                 for attempt in 0..<3 {
                     do {
+                        let apiKey = try requireAPIKey()
                         var request = URLRequest(url: baseURL)
                         request.httpMethod = "POST"
                         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -204,6 +211,7 @@ final class PollinationsChatService: ChatServiceProtocol, Sendable {
     }
 
     func sendMessage(_ messages: [API_Message], model: String) async throws -> String {
+        let apiKey = try requireAPIKey()
         var request = URLRequest(url: baseURL)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")

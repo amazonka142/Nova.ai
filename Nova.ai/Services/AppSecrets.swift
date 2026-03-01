@@ -35,4 +35,8 @@ enum AppSecrets {
     static var tavilyAPIKey: String? {
         sanitizedValue(for: "TAVILY_API_KEY")
     }
+
+    static var pollinationsAPIKey: String? {
+        sanitizedValue(for: "POLLINATIONS_API_KEY")
+    }
 }
