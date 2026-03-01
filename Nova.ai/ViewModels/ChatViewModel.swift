@@ -352,6 +352,14 @@ final class ChatViewModel: ObservableObject {
         currentTask = nil
         isLoading = false
     }
+
+    private func shouldFallbackFromStream(_ error: Error) -> Bool {
+        let nsError = error as NSError
+        if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorBadServerResponse {
+            return true
+        }
+        return false
+    }
     
     func handleCameraImage(_ image: UIImage) {
         Task {
@@ -571,11 +579,16 @@ final class ChatViewModel: ObservableObject {
                 let aiMessage = Message(role: .assistant, content: "")
                 currentSession.messages.append(aiMessage)
                 
-                // Stream response
-                let stream = chatService.streamMessage(apiMessages, model: modelToSend)
-                
-                for try await chunk in stream {
-                    aiMessage.content += chunk
+                // Stream response with fallback to non-stream for intermittent HTTP errors (-1011)
+                do {
+                    let stream = chatService.streamMessage(apiMessages, model: modelToSend)
+                    for try await chunk in stream {
+                        aiMessage.content += chunk
+                    }
+                } catch {
+                    guard shouldFallbackFromStream(error) else { throw error }
+                    let fallbackResponse = try await chatService.sendMessage(apiMessages, model: modelToSend)
+                    aiMessage.content = fallbackResponse
                 }
                 
                 currentSession.lastModified = Date()
@@ -697,11 +710,17 @@ final class ChatViewModel: ObservableObject {
         var fullResponse = ""
         // Using the selected model from settings
         do {
-            let stream = chatService.streamMessage(apiMessages, model: modelToSend)
-            
-            for try await chunk in stream {
-                fullResponse += chunk
-                aiMessage.content = fullResponse
+            do {
+                let stream = chatService.streamMessage(apiMessages, model: modelToSend)
+                for try await chunk in stream {
+                    fullResponse += chunk
+                    aiMessage.content = fullResponse
+                }
+            } catch {
+                guard shouldFallbackFromStream(error) else { throw error }
+                let fallbackResponse = try await chatService.sendMessage(apiMessages, model: modelToSend)
+                fullResponse = fallbackResponse
+                aiMessage.content = fallbackResponse
             }
         } catch {
             // Cleanup: Remove the empty placeholder if API failed

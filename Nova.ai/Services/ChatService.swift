@@ -76,6 +76,23 @@ final class PollinationsChatService: ChatServiceProtocol, Sendable {
         }
         return apiKey
     }
+
+    private func makeBadServerError(statusCode: Int, responseData: Data) -> NSError {
+        let rawBody = String(data: responseData, encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            ?? "Unknown server error"
+        let trimmedBody = rawBody.count > 500 ? String(rawBody.prefix(500)) + "..." : rawBody
+        let description = "API \(statusCode): \(trimmedBody)"
+        return NSError(
+            domain: NSURLErrorDomain,
+            code: NSURLErrorBadServerResponse,
+            userInfo: [
+                NSLocalizedDescriptionKey: description,
+                "httpStatus": statusCode,
+                "responseBody": trimmedBody
+            ]
+        )
+    }
     
     // ... sendMessage implementation ...
     
@@ -147,7 +164,7 @@ final class PollinationsChatService: ChatServiceProtocol, Sendable {
                             for try await byte in bytes { errorData.append(byte) }
                             let errorStr = String(data: errorData, encoding: .utf8) ?? "Unknown error"
                             NSLog("⚠️ API Error Body: \(errorStr)")
-                             throw URLError(.badServerResponse)
+                            throw makeBadServerError(statusCode: httpResponse.statusCode, responseData: errorData)
                         }
                         
                         for try await line in bytes.lines {
@@ -268,7 +285,8 @@ final class PollinationsChatService: ChatServiceProtocol, Sendable {
                     if let errorText = String(data: data, encoding: .utf8) {
                         print("API Error: \(errorText) (Status: \((response as? HTTPURLResponse)?.statusCode ?? 0))")
                     }
-                    throw URLError(.badServerResponse)
+                    let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
+                    throw makeBadServerError(statusCode: statusCode, responseData: data)
                 }
                 
                 // Structure for OpenAI-compatible response
