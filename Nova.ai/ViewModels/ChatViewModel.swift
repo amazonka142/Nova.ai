@@ -360,6 +360,38 @@ final class ChatViewModel: ObservableObject {
         }
         return false
     }
+
+    private func isOpenAIModel(_ model: String) -> Bool {
+        let lowered = model.lowercased()
+        return lowered.contains("openai") || lowered.contains("gpt")
+    }
+
+    private func isAzureContentFilterError(_ error: Error) -> Bool {
+        let message = (error as NSError).localizedDescription.lowercased()
+        return message.contains("azure-openai") &&
+            (message.contains("content management policy") || message.contains("response was filtered"))
+    }
+
+    private func userFacingSendErrorMessage(_ error: Error) -> String {
+        if isAzureContentFilterError(error) {
+            return "GPT-5 отклонил запрос фильтром контента. Переформулируй сообщение или используй Gemini 2.5 Flash Lite."
+        }
+        return "Failed to send message: \(error.localizedDescription)"
+    }
+
+    private func streamOrRequestResponse(_ apiMessages: [API_Message], model: String) async throws -> String {
+        do {
+            var response = ""
+            let stream = chatService.streamMessage(apiMessages, model: model)
+            for try await chunk in stream {
+                response += chunk
+            }
+            return response
+        } catch {
+            guard shouldFallbackFromStream(error) else { throw error }
+            return try await chatService.sendMessage(apiMessages, model: model)
+        }
+    }
     
     func handleCameraImage(_ image: UIImage) {
         Task {
@@ -579,16 +611,15 @@ final class ChatViewModel: ObservableObject {
                 let aiMessage = Message(role: .assistant, content: "")
                 currentSession.messages.append(aiMessage)
                 
-                // Stream response with fallback to non-stream for intermittent HTTP errors (-1011)
+                // Primary request + transport fallback; if GPT-* is content-filtered by Azure, auto-fallback to Gemini.
                 do {
-                    let stream = chatService.streamMessage(apiMessages, model: modelToSend)
-                    for try await chunk in stream {
-                        aiMessage.content += chunk
-                    }
+                    aiMessage.content = try await streamOrRequestResponse(apiMessages, model: modelToSend)
                 } catch {
-                    guard shouldFallbackFromStream(error) else { throw error }
-                    let fallbackResponse = try await chatService.sendMessage(apiMessages, model: modelToSend)
-                    aiMessage.content = fallbackResponse
+                    if isOpenAIModel(modelToSend) && isAzureContentFilterError(error) {
+                        aiMessage.content = try await streamOrRequestResponse(apiMessages, model: "gemini-fast")
+                    } else {
+                        throw error
+                    }
                 }
                 
                 currentSession.lastModified = Date()
@@ -613,7 +644,7 @@ final class ChatViewModel: ObservableObject {
                 
             } catch {
                 if !(error is CancellationError) {
-                    errorMessage = "Failed to send message: \(error.localizedDescription)"
+                    errorMessage = userFacingSendErrorMessage(error)
                     // Remove the empty message if failed
                     if let last = currentSession.messages.last, last.role == .assistant, last.content.isEmpty {
                         currentSession.messages.removeLast()
@@ -707,20 +738,18 @@ final class ChatViewModel: ObservableObject {
         currentSession.messages.append(aiMessage)
         
         // 5. Call API & Accumulate Response
-        var fullResponse = ""
         // Using the selected model from settings
         do {
             do {
-                let stream = chatService.streamMessage(apiMessages, model: modelToSend)
-                for try await chunk in stream {
-                    fullResponse += chunk
-                    aiMessage.content = fullResponse
-                }
+                let primaryResponse = try await streamOrRequestResponse(apiMessages, model: modelToSend)
+                aiMessage.content = primaryResponse
             } catch {
-                guard shouldFallbackFromStream(error) else { throw error }
-                let fallbackResponse = try await chatService.sendMessage(apiMessages, model: modelToSend)
-                fullResponse = fallbackResponse
-                aiMessage.content = fallbackResponse
+                if isOpenAIModel(modelToSend) && isAzureContentFilterError(error) {
+                    let fallbackResponse = try await streamOrRequestResponse(apiMessages, model: "gemini-fast")
+                    aiMessage.content = fallbackResponse
+                } else {
+                    throw error
+                }
             }
         } catch {
             // Cleanup: Remove the empty placeholder if API failed
@@ -737,7 +766,7 @@ final class ChatViewModel: ObservableObject {
         syncMessageToFirestore(aiMessage, session: currentSession)
         syncSessionToFirestore(currentSession)
         
-        return fullResponse
+        return aiMessage.content
     }
     
     // MARK: - Memory Management
