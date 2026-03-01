@@ -336,6 +336,109 @@ struct DetailedComparisonView: View {
     let selectedLanguage: AppLanguage
     @State private var showProjectsInfo = false
     
+    private var perDay: String {
+        selectedLanguage == .russian ? "/д" : "/d"
+    }
+    
+    private var perWeek: String {
+        selectedLanguage == .russian ? "/н" : "/w"
+    }
+    
+    private func daily(_ value: Int) -> String {
+        "\(value)\(perDay)"
+    }
+    
+    private func weekly(_ value: Int) -> String {
+        "\(value)\(perWeek)"
+    }
+    
+    private var comparisonSections: [ComparisonSectionModel] {
+        [
+            ComparisonSectionModel(
+                id: "ai-models",
+                title: selectedLanguage == .russian ? "AI модели" : "AI Models",
+                rows: [
+                    ComparisonItemModel(id: "nova-v1-rlhf", title: "Nova v1-RLHF", free: true, pro: true, max: true),
+                    ComparisonItemModel(id: "gemini-flash-lite", title: "Gemini Flash Lite", free: true, pro: true, max: true),
+                    ComparisonItemModel(id: "gpt-5-nano", title: "GPT-5 Nano", free: daily(10), pro: "check", max: "check"),
+                    ComparisonItemModel(id: "gpt-5-mini", title: "GPT-5 Mini", free: "minus", pro: daily(100), max: "check"),
+                    ComparisonItemModel(id: "nova-v1-rp", title: "Nova-v1-RP", free: daily(5), pro: weekly(50), max: weekly(150)),
+                    ComparisonItemModel(id: "nova-v1-pro", title: "Nova-v1-Pro", free: "minus", pro: weekly(60), max: weekly(200)),
+                    ComparisonItemModel(id: "deepthink", title: "DeepThink", free: "minus", pro: "minus", max: daily(30))
+                ]
+            ),
+            ComparisonSectionModel(
+                id: "features",
+                title: selectedLanguage == .russian ? "Функции" : "Features",
+                rows: [
+                    ComparisonItemModel(
+                        id: "memory",
+                        title: selectedLanguage == .russian ? "Память (фактов)" : "Memory (facts)",
+                        free: "10",
+                        pro: "25",
+                        max: "50"
+                    ),
+                    ComparisonItemModel(
+                        id: "projects",
+                        title: selectedLanguage == .russian ? "Проекты" : "Projects",
+                        free: selectedLanguage == .russian ? "Ограниченно" : "Limited",
+                        pro: selectedLanguage == .russian ? "Расширено" : "Extended",
+                        max: "check",
+                        hasInfoButton: true
+                    ),
+                    ComparisonItemModel(
+                        id: "image-uploads",
+                        title: selectedLanguage == .russian ? "Загрузка изображений" : "Image Uploads",
+                        free: daily(10),
+                        pro: daily(35),
+                        max: daily(75)
+                    ),
+                    ComparisonItemModel(
+                        id: "voice-chat",
+                        title: selectedLanguage == .russian ? "Голосовое общение" : "Voice Chat",
+                        free: false,
+                        pro: true,
+                        max: true
+                    ),
+                    ComparisonItemModel(
+                        id: "web-search",
+                        title: selectedLanguage == .russian ? "Поиск в интернете" : "Web Search",
+                        free: false,
+                        pro: true,
+                        max: true
+                    )
+                ]
+            ),
+            ComparisonSectionModel(
+                id: "advanced-features",
+                title: selectedLanguage == .russian ? "Продвинутое" : "Advanced",
+                rows: [
+                    ComparisonItemModel(
+                        id: "deep-research",
+                        title: "Deep Research (Alpha)",
+                        free: "minus",
+                        pro: "minus",
+                        max: weekly(10)
+                    ),
+                    ComparisonItemModel(
+                        id: "image-generation",
+                        title: selectedLanguage == .russian ? "Генерация картинок" : "Image Generation",
+                        free: daily(20),
+                        pro: "check",
+                        max: "check"
+                    ),
+                    ComparisonItemModel(
+                        id: "file-analysis",
+                        title: selectedLanguage == .russian ? "Анализ файлов" : "File Analysis",
+                        free: false,
+                        pro: false,
+                        max: true
+                    )
+                ]
+            )
+        ]
+    }
+    
     var body: some View {
         VStack(spacing: 0) {
             // Header
@@ -359,39 +462,15 @@ struct DetailedComparisonView: View {
             
             Divider()
             
-            VStack(spacing: 0) {
-                // Models
-                Group {
-                    ComparisonRow(title: "Nova v1-RLHF", free: true, pro: true, max: true, selectedPlan: selectedPlan)
-                    ComparisonRow(title: "Gemini Flash Lite", free: true, pro: true, max: true, selectedPlan: selectedPlan)
-                    ComparisonRow(title: "GPT-5 Nano", free: selectedLanguage == .russian ? "10/д" : "10/d", pro: "check", max: "check", selectedPlan: selectedPlan)
-                    ComparisonRow(title: "GPT-5 Mini", free: "minus", pro: selectedLanguage == .russian ? "100/д" : "100/d", max: "check", selectedPlan: selectedPlan)
-                    ComparisonRow(title: "Nova-v1-RP", free: selectedLanguage == .russian ? "5/д" : "5/d", pro: selectedLanguage == .russian ? "50/н" : "50/w", max: selectedLanguage == .russian ? "150/н" : "150/w", selectedPlan: selectedPlan)
-                    ComparisonRow(title: "Nova-v1-Pro", free: "minus", pro: selectedLanguage == .russian ? "60/н" : "60/w", max: selectedLanguage == .russian ? "200/н" : "200/w", selectedPlan: selectedPlan)
-                    ComparisonRow(title: "DeepThink", free: "minus", pro: "minus", max: selectedLanguage == .russian ? "30/д" : "30/d", selectedPlan: selectedPlan)
-                }
-                
-                // Capabilities
-                Group {
-                    ComparisonRow(title: selectedLanguage == .russian ? "Память (фактов)" : "Memory (facts)", free: "10", pro: "25", max: "50", selectedPlan: selectedPlan)
-                    ComparisonRow(
-                        title: selectedLanguage == .russian ? "Проекты" : "Projects",
-                        free: selectedLanguage == .russian ? "Ограниченно" : "Limited",
-                        pro: selectedLanguage == .russian ? "Расширено" : "Extended",
-                        max: "check",
-                        selectedPlan: selectedPlan,
-                        infoAction: { showProjectsInfo = true }
-                    )
-                    ComparisonRow(title: selectedLanguage == .russian ? "Загрузка изображений" : "Image Uploads", free: selectedLanguage == .russian ? "10/д" : "10/d", pro: selectedLanguage == .russian ? "35/д" : "35/d", max: selectedLanguage == .russian ? "75/д" : "75/d", selectedPlan: selectedPlan)
-                    ComparisonRow(title: selectedLanguage == .russian ? "Голосовое общение" : "Voice Chat", free: false, pro: true, max: true, selectedPlan: selectedPlan)
-                    ComparisonRow(title: selectedLanguage == .russian ? "Поиск в интернете" : "Web Search", free: false, pro: true, max: true, selectedPlan: selectedPlan)
-                }
-                
-                // Advanced
-                Group {
-                    ComparisonRow(title: selectedLanguage == .russian ? "Deep Research (Alpha)" : "Deep Research (Alpha)", free: "minus", pro: "minus", max: selectedLanguage == .russian ? "10/н" : "10/w", selectedPlan: selectedPlan)
-                    ComparisonRow(title: selectedLanguage == .russian ? "Генерация картинок" : "Image Generation", free: selectedLanguage == .russian ? "20/д" : "20/d", pro: "check", max: "check", selectedPlan: selectedPlan)
-                    ComparisonRow(title: selectedLanguage == .russian ? "Анализ файлов" : "File Analysis", free: false, pro: false, max: true, selectedPlan: selectedPlan)
+            VStack(spacing: 12) {
+                ForEach(comparisonSections) { section in
+                    ComparisonSectionCard(
+                        section: section,
+                        selectedPlan: selectedPlan
+                    ) { item in
+                        guard item.hasInfoButton else { return }
+                        showProjectsInfo = true
+                    }
                 }
             }
             .padding(.top, 10)
@@ -402,6 +481,73 @@ struct DetailedComparisonView: View {
         .sheet(isPresented: $showProjectsInfo) {
             ProjectsInfoSheet(selectedPlan: selectedPlan, selectedLanguage: selectedLanguage)
         }
+    }
+}
+
+struct ComparisonSectionModel: Identifiable {
+    let id: String
+    let title: String
+    let rows: [ComparisonItemModel]
+}
+
+struct ComparisonItemModel: Identifiable {
+    let id: String
+    let title: String
+    let free: String
+    let pro: String
+    let max: String
+    let hasInfoButton: Bool
+    
+    init(id: String, title: String, free: Bool, pro: Bool, max: Bool, hasInfoButton: Bool = false) {
+        self.id = id
+        self.title = title
+        self.free = free ? "check" : "minus"
+        self.pro = pro ? "check" : "minus"
+        self.max = max ? "check" : "minus"
+        self.hasInfoButton = hasInfoButton
+    }
+    
+    init(id: String, title: String, free: String, pro: String, max: String, hasInfoButton: Bool = false) {
+        self.id = id
+        self.title = title
+        self.free = free
+        self.pro = pro
+        self.max = max
+        self.hasInfoButton = hasInfoButton
+    }
+}
+
+struct ComparisonSectionCard: View {
+    let section: ComparisonSectionModel
+    let selectedPlan: String
+    let onInfoTap: (ComparisonItemModel) -> Void
+    
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text(section.title.uppercased())
+                    .font(.caption2)
+                    .fontWeight(.bold)
+                    .foregroundColor(.secondary)
+                Spacer()
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(Color(UIColor.tertiarySystemFill))
+            
+            ForEach(section.rows) { row in
+                ComparisonRow(
+                    title: row.title,
+                    free: row.free,
+                    pro: row.pro,
+                    max: row.max,
+                    selectedPlan: selectedPlan,
+                    infoAction: row.hasInfoButton ? { onInfoTap(row) } : nil
+                )
+            }
+        }
+        .background(Color(UIColor.systemBackground).opacity(0.55))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 }
 
