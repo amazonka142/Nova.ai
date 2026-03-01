@@ -1568,10 +1568,14 @@ final class ChatViewModel: ObservableObject {
             } else {
                 selectProject(fallbackProject)
             }
+            // On app launch, always start from a fresh empty session (welcome screen),
+            // instead of auto-opening the most recent chat.
+            createNewSession()
         } catch {
             errorMessage = "Не удалось подготовить проекты: \(error.localizedDescription)"
             if let firstProject = fetchFirstProject() {
                 selectProject(firstProject)
+                createNewSession()
             } else {
                 let tempProject = Project(name: "Внешние чаты", icon: "📝", themeColor: .blue, memoryScope: .shared)
                 currentProject = tempProject
