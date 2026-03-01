@@ -1969,7 +1969,7 @@ final class ChatViewModel: ObservableObject {
 
     // Firestore doesn't cascade-delete subcollections. Remove message docs first, then delete chat doc.
     private func deleteMessagesBatch(in chatRef: DocumentReference, completion: @escaping (Error?) -> Void) {
-        chatRef.collection("messages").limit(to: 200).getDocuments { [weak self] snapshot, error in
+        chatRef.collection("messages").limit(to: 200).getDocuments { snapshot, error in
             if let error {
                 completion(error)
                 return
@@ -1979,14 +1979,14 @@ final class ChatViewModel: ObservableObject {
                 return
             }
 
-            let batch = self?.db.batch() ?? Firestore.firestore().batch()
+            let batch = self.db.batch()
             documents.forEach { batch.deleteDocument($0.reference) }
             batch.commit { error in
                 if let error {
                     completion(error)
                     return
                 }
-                self?.deleteMessagesBatch(in: chatRef, completion: completion)
+                self.deleteMessagesBatch(in: chatRef, completion: completion)
             }
         }
     }
