@@ -542,13 +542,16 @@ final class ChatViewModel: ObservableObject {
                 
                 contextMessages.append(Message(role: .system, content: effectiveSystemPrompt))
                 
-                // Strict Focus Logic: If enabled, do NOT send history, only the last message
+                // Do not include internal system notes from chat history in model context.
+                let conversationHistory = currentSession.messages.filter { $0.role != .system }
+                
+                // Strict Focus Logic: If enabled, do NOT send history, only the last conversational message.
                 if UserDefaults.standard.bool(forKey: "ai_strict_focus") {
-                    if let lastMessage = currentSession.messages.last {
+                    if let lastMessage = conversationHistory.last {
                         contextMessages.append(lastMessage)
                     }
                 } else {
-                    contextMessages.append(contentsOf: currentSession.messages)
+                    contextMessages.append(contentsOf: conversationHistory)
                 }
                 
                 // Construct DTOs
@@ -662,13 +665,16 @@ final class ChatViewModel: ObservableObject {
         
         contextMessages.append(Message(role: .system, content: effectiveSystemPrompt))
         
+        // Do not include internal system notes from chat history in model context.
+        let conversationHistory = currentSession.messages.filter { $0.role != .system }
+        
         // Strict Focus Logic
         if UserDefaults.standard.bool(forKey: "ai_strict_focus") {
-            if let lastMessage = currentSession.messages.last {
+            if let lastMessage = conversationHistory.last {
                 contextMessages.append(lastMessage)
             }
         } else {
-            contextMessages.append(contentsOf: currentSession.messages)
+            contextMessages.append(contentsOf: conversationHistory)
         }
         
         let apiMessages = contextMessages.map {
@@ -943,7 +949,9 @@ final class ChatViewModel: ObservableObject {
         3. **Adaptability**: If the user changes the topic, pivot IMMEDIATELY. Do not cling to previous context.
         4. **No Filler**: Avoid robotic transitions like "Here is the answer" or "I hope this helps." Just answer the user.
         5. **Safety**: Be harmless and helpful.
-        \(strictFocus ? "6. **STRICT FOCUS MODE**: The user has requested to ignore all previous conversation history. Answer ONLY the specific question asked in the last message." : "")
+        6. **Relevance First**: Start by answering the user's latest request directly. Do not ignore the main question.
+        7. **Memory Discipline**: Use profile/memory only when directly relevant. Avoid unsolicited personal greetings or side comments.
+        \(strictFocus ? "8. **STRICT FOCUS MODE**: The user has requested to ignore all previous conversation history. Answer ONLY the specific question asked in the last message." : "")
         
         ### CONFIGURATION
         The user has customized your behavior. Strictly adhere to these settings:
