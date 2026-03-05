@@ -1169,14 +1169,14 @@ final class ChatViewModel: ObservableObject {
         
         currentTask = Task {
             do {
-                // Pollinations Flux URL
+                // Pollinations unified image endpoint (gen.pollinations.ai)
                 // Using Flux model, 1024x1024, no logo
                 let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-._~"))
                 let encodedPrompt = promptToSend.addingPercentEncoding(withAllowedCharacters: allowed)
                     ?? promptToSend.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)
                     ?? ""
                 guard !encodedPrompt.isEmpty else { throw URLError(.badURL) }
-                let urlString = "https://image.pollinations.ai/prompt/\(encodedPrompt)?model=flux&width=1024&height=1024&nologo=true"
+                let urlString = "https://gen.pollinations.ai/image/\(encodedPrompt)?model=flux&width=1024&height=1024&nologo=true"
                 
                 guard let url = URL(string: urlString) else { throw URLError(.badURL) }
                 

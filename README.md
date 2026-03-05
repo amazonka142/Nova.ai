@@ -11,7 +11,44 @@ Nova.ai is an iOS AI assistant app for chat, reasoning, and image generation.
 Nova.ai uses pollinations.ai APIs in two core flows:
 
 - Text generation and chat via `https://gen.pollinations.ai/v1/chat/completions`
-- Image generation via `https://image.pollinations.ai/prompt/...` (Flux model)
+- Image generation via `https://gen.pollinations.ai/image/...` (Flux model)
+
+## Installation and Run
+
+### Requirements
+
+- macOS with Xcode installed
+- iOS Simulator or physical iPhone
+- (Optional) Docker for backend
+- (Optional) Python 3.11+ for backend without Docker
+
+### iOS app setup
+
+1. Open the project:
+   ```bash
+   open Nova.ai.xcodeproj
+   ```
+2. Configure app keys in `Nova-ai-Info.plist` (at minimum `POLLINATIONS_API_KEY`).
+3. If you use Firebase, copy and configure:
+   ```bash
+   cp GoogleService-Info.plist.example GoogleService-Info.plist
+   ```
+4. In Xcode, select the `Nova.ai` scheme and run (`Cmd+R`).
+
+### Backend setup (optional)
+
+Run from repository root:
+
+```bash
+cp .env.example .env
+docker compose up --build
+```
+
+Health check:
+
+- [http://localhost:8000/health](http://localhost:8000/health)
+
+Detailed backend instructions: [backend/README.md](backend/README.md)
 
 ## Features
 
