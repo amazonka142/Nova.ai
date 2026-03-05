@@ -1,3 +1,11 @@
 node_modules/
 lib/
 *.log
+.firebase/
+.runtimeconfig.json
+.env
+.env.local
+firebase-debug.log*
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*

@@ -10,13 +10,22 @@
 backend/.env
 Nova.ai/GoogleService-Info.plist
 Nova-ai-Info.plist
-.env.example
-GoogleService-Info.plist.example
-firebase.json
-docker-compose.yml
+
+# Editor / local tooling
+.vscode/
+.idea/
+
+# Local build artifacts
+DerivedData/
+.build/
 
 # Python backend artifacts
 backend/.venv/
 backend/.pytest_cache/
 backend/**/__pycache__/
 backend/**/*.pyc
+backend/.coverage
+backend/htmlcov/
+backend/.mypy_cache/
+backend/.ruff_cache/
+backend/.hypothesis/
