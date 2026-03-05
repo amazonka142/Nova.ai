@@ -11,7 +11,7 @@ Nova.ai is an iOS AI assistant app for chat, reasoning, and image generation.
 Nova.ai uses pollinations.ai APIs in two core flows:
 
 - Text generation and chat via `https://gen.pollinations.ai/v1/chat/completions`
-- Image generation via `https://gen.pollinations.ai/image/...` (Flux model)
+- Image generation via `https://gen.pollinations.ai/image/{prompt}?model=flux`
 
 ## Installation and Run
 

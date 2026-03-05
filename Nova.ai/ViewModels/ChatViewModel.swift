@@ -1179,8 +1179,30 @@ final class ChatViewModel: ObservableObject {
                 let urlString = "https://gen.pollinations.ai/image/\(encodedPrompt)?model=flux&width=1024&height=1024&nologo=true"
                 
                 guard let url = URL(string: urlString) else { throw URLError(.badURL) }
-                
-                let (data, _) = try await URLSession.shared.data(from: url)
+
+                guard let apiKey = AppSecrets.pollinationsAPIKey else {
+                    throw URLError(.userAuthenticationRequired)
+                }
+
+                var request = URLRequest(url: url)
+                request.httpMethod = "GET"
+                request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+
+                let (data, response) = try await URLSession.shared.data(for: request)
+                guard let httpResponse = response as? HTTPURLResponse else {
+                    throw URLError(.badServerResponse)
+                }
+                guard (200...299).contains(httpResponse.statusCode) else {
+                    let rawBody = String(data: data, encoding: .utf8)?
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                        ?? "Unknown server error"
+                    let description = "Image API \(httpResponse.statusCode): \(rawBody)"
+                    throw NSError(
+                        domain: NSURLErrorDomain,
+                        code: NSURLErrorBadServerResponse,
+                        userInfo: [NSLocalizedDescriptionKey: description]
+                    )
+                }
                 
                 let aiMessage = Message(role: .assistant, content: "Изображение по запросу: \(promptToSend)", type: .image, imageData: data)
                 currentSession.messages.append(aiMessage)
