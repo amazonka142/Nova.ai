@@ -7,9 +7,13 @@
 
 # Local env files
 .env
+.env.example
 backend/.env
 Nova.ai/GoogleService-Info.plist
+GoogleService-Info.plist.example
 Nova-ai-Info.plist
+firebase.json
+docker-compose.yml
 
 # Editor / local tooling
 .vscode/

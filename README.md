@@ -50,6 +50,19 @@ Health check:
 
 Detailed backend instructions: [backend/README.md](backend/README.md)
 
+### Firebase Functions setup (optional)
+
+Run from repository root:
+
+```bash
+cd functions
+npm install
+npm run build
+```
+
+Recommended Node.js versions: 20 or 22.
+`functions/package-lock.json` is committed intentionally so installs stay reproducible.
+
 ## Features
 
 - Multi-model AI chat

@@ -209,7 +209,7 @@ final class ChatViewModel: ObservableObject {
     }
     
     private var firebaseUnavailableMessage: String {
-        "Firebase не настроен. Приложение работает только в локальном режиме."
+        "Firebase не настроен. Доступен локальный режим без входа и облачной синхронизации."
     }
     
     init(service: ChatServiceProtocol? = nil, context: ModelContext? = nil) {
