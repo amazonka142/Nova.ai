@@ -227,6 +227,9 @@ final class ChatViewModel: ObservableObject {
         self.modelContext = context
 
         initializeProjects()
+        if userSession != nil {
+            restoreHistory()
+        }
     }
     
     func speakMessage(_ text: String) {
@@ -1063,6 +1066,7 @@ final class ChatViewModel: ObservableObject {
         currentSession.lastModified = Date()
         syncMessageToFirestore(userMessage, session: currentSession)
         syncSessionToFirestore(currentSession)
+        incrementUsage(for: selectedModel)
         
         inputText = ""
         isLoading = true
@@ -1130,6 +1134,7 @@ final class ChatViewModel: ObservableObject {
         currentSession.lastModified = Date()
         syncMessageToFirestore(userMessage, session: currentSession)
         syncSessionToFirestore(currentSession)
+        incrementUsage(for: "image")
         
         let promptToSend = prompt
         inputText = ""
@@ -2579,12 +2584,186 @@ final class ChatViewModel: ObservableObject {
             "isMax": isMax
         ], merge: true)
     }
+
+    private func parseMessageRole(_ rawRole: String?) -> MessageRole {
+        switch rawRole?.lowercased() {
+        case "assistant":
+            return .assistant
+        case "system":
+            return .system
+        default:
+            return .user
+        }
+    }
+
+    private func parseMessageType(_ rawType: String?) -> MessageType {
+        switch rawType?.lowercased() {
+        case "image":
+            return .image
+        default:
+            return .text
+        }
+    }
+
+    private func restoreMessagesFromFirestore(userId: String, chatId: String, session: ChatSession) {
+        let messagesRef = db.collection("users").document(userId)
+            .collection("chats").document(chatId)
+            .collection("messages")
+            .order(by: "createdAt")
+
+        messagesRef.getDocuments { [weak self] snapshot, error in
+            guard let self = self else { return }
+            if let error {
+                print("Firestore messages restore failed (\(chatId)): \(error)")
+                return
+            }
+
+            guard let documents = snapshot?.documents, !documents.isEmpty else { return }
+
+            Task { @MainActor in
+                var existingById: [UUID: Message] = [:]
+                for message in session.messages {
+                    existingById[message.id] = message
+                }
+
+                var didChange = false
+                for document in documents {
+                    let data = document.data()
+                    let rawMessageId = (data["id"] as? String) ?? document.documentID
+                    guard let messageId = UUID(uuidString: rawMessageId) else { continue }
+
+                    let content = data["content"] as? String ?? ""
+                    let role = self.parseMessageRole(data["role"] as? String)
+                    let type = self.parseMessageType(data["type"] as? String)
+                    let createdAt = (data["createdAt"] as? Timestamp)?.dateValue() ?? Date()
+                    let imageData = data["imageData"] as? Data
+
+                    if let existing = existingById[messageId] {
+                        if existing.role != role {
+                            existing.role = role
+                            didChange = true
+                        }
+                        if existing.type != type {
+                            existing.type = type
+                            didChange = true
+                        }
+                        if existing.content != content {
+                            existing.content = content
+                            didChange = true
+                        }
+                        if existing.timestamp != createdAt {
+                            existing.timestamp = createdAt
+                            didChange = true
+                        }
+                        if existing.imageData != imageData {
+                            existing.imageData = imageData
+                            didChange = true
+                        }
+                        continue
+                    }
+
+                    let restored = Message(role: role, content: content, type: type, imageData: imageData)
+                    restored.id = messageId
+                    restored.timestamp = createdAt
+                    session.messages.append(restored)
+                    existingById[messageId] = restored
+                    didChange = true
+                }
+
+                if didChange {
+                    session.messages.sort { $0.timestamp < $1.timestamp }
+                    if let latestMessageDate = session.messages.last?.timestamp, latestMessageDate > session.lastModified {
+                        session.lastModified = latestMessageDate
+                    }
+                    self.saveContext()
+                }
+            }
+        }
+    }
     
     private func restoreHistory() {
-        // This function would fetch chats from Firestore and insert them into SwiftData
-        // if they don't exist locally.
-        // Since we are using SwiftData as the source of truth for UI, 
-        // we need to be careful about duplication.
+        guard let user = userSession else { return }
+        guard modelContext != nil else { return }
+
+        let chatsRef = db.collection("users").document(user.uid).collection("chats")
+        chatsRef.getDocuments { [weak self] snapshot, error in
+            guard let self = self else { return }
+
+            if let error {
+                print("Firestore restore failed: \(error)")
+                return
+            }
+
+            guard let documents = snapshot?.documents, !documents.isEmpty else { return }
+
+            Task { @MainActor in
+                guard let context = self.modelContext else { return }
+                let fallbackProject = self.currentProject ?? self.fetchFirstProject()
+
+                let descriptor = FetchDescriptor<ChatSession>()
+                let existingSessions = (try? context.fetch(descriptor)) ?? []
+                var sessionsById: [UUID: ChatSession] = [:]
+                for session in existingSessions {
+                    if let uuid = session.uuid {
+                        sessionsById[uuid] = session
+                    }
+                }
+
+                var restoredPairs: [(session: ChatSession, chatId: String)] = []
+                var didChange = false
+
+                for document in documents {
+                    let data = document.data()
+                    let rawChatId = (data["id"] as? String) ?? document.documentID
+                    guard let chatId = UUID(uuidString: rawChatId) else { continue }
+
+                    let rawTitle = (data["title"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let rawModel = (data["model"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let title = (rawTitle?.isEmpty == false) ? (rawTitle ?? "New Chat") : "New Chat"
+                    let model = (rawModel?.isEmpty == false) ? (rawModel ?? "gemini-fast") : "gemini-fast"
+                    let lastModified = (data["lastModified"] as? Timestamp)?.dateValue() ?? Date()
+
+                    let session: ChatSession
+                    if let existing = sessionsById[chatId] {
+                        session = existing
+                    } else {
+                        let restored = ChatSession(title: title, model: model, project: fallbackProject)
+                        restored.uuid = chatId
+                        context.insert(restored)
+                        sessionsById[chatId] = restored
+                        session = restored
+                        didChange = true
+                    }
+
+                    if session.title != title {
+                        session.title = title
+                        didChange = true
+                    }
+                    if session.model != model {
+                        session.model = model
+                        didChange = true
+                    }
+                    if session.lastModified != lastModified {
+                        session.lastModified = lastModified
+                        didChange = true
+                    }
+                    if session.project == nil, let fallbackProject {
+                        session.project = fallbackProject
+                        didChange = true
+                    }
+
+                    restoredPairs.append((session: session, chatId: chatId.uuidString))
+                }
+
+                if didChange {
+                    self.saveContext()
+                }
+
+                for pair in restoredPairs {
+                    self.restoreMessagesFromFirestore(userId: user.uid, chatId: pair.chatId, session: pair.session)
+                }
+            }
+        }
     }
     
     // MARK: - Manual Activation Helpers
