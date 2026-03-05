@@ -140,6 +140,9 @@ final class ChatViewModel: ObservableObject {
     private let maxKnowledgeChars = 20_000
     private let maxFirestoreContentChars = 200_000
     private let currentProjectIdKey = "current_project_id"
+    private let maxContextMessageCount = 24
+    private let maxContextCharacterBudget = 24_000
+    private let eagerMessageRestoreLimit = 20
     
     // Deep Research State
     @Published var researchStates: [UUID: ResearchSessionData] = [:] {
@@ -163,6 +166,9 @@ final class ChatViewModel: ObservableObject {
     private var usageListener: ListenerRegistration?
     private var networkTimeOffset: TimeInterval?
     private var researchSaveWorkItem: DispatchWorkItem?
+    private var lastSyncedSessionSignatures: [String: String] = [:]
+    private var lastSyncedMessageSignatures: [String: String] = [:]
+    private var restoredMessageChatIds: Set<String> = []
     private let researchSaveDelay: TimeInterval = 0.75
     
     // Available Models
@@ -211,6 +217,7 @@ final class ChatViewModel: ObservableObject {
         _ = Auth.auth().addStateDidChangeListener { [weak self] _, user in
             self?.userSession = user
             if let user = user {
+                self?.restoredMessageChatIds.removeAll()
                 self?.setupUsageListener(userId: user.uid)
                 self?.restoreHistory()
                 if user.isAnonymous {
@@ -219,6 +226,9 @@ final class ChatViewModel: ObservableObject {
             } else {
                 self?.usageListener?.remove()
                 self?.dailyRequestCount = 0
+                self?.lastSyncedSessionSignatures.removeAll()
+                self?.lastSyncedMessageSignatures.removeAll()
+                self?.restoredMessageChatIds.removeAll()
             }
         }
     }
@@ -394,6 +404,47 @@ final class ChatViewModel: ObservableObject {
             guard shouldFallbackFromStream(error) else { throw error }
             return try await chatService.sendMessage(apiMessages, model: model)
         }
+    }
+
+    private func compactConversationHistory(_ messages: [Message], strictFocus: Bool) -> [Message] {
+        let conversation = messages.filter { $0.role != .system }
+        guard !conversation.isEmpty else { return [] }
+
+        if strictFocus {
+            return Array(conversation.suffix(1))
+        }
+
+        var selected: [Message] = []
+        var totalChars = 0
+
+        for message in conversation.reversed() {
+            let messageChars = message.content.count
+            let messageImageWeight = (message.imageData?.count ?? 0) / 4
+            let estimatedWeight = messageChars + messageImageWeight
+
+            if !selected.isEmpty &&
+                (selected.count >= maxContextMessageCount || totalChars + estimatedWeight > maxContextCharacterBudget) {
+                break
+            }
+
+            selected.append(message)
+            totalChars += estimatedWeight
+        }
+
+        return selected.reversed()
+    }
+
+    private func buildAPIContext(systemPrompt: String, messages: [Message], strictFocus: Bool) -> [API_Message] {
+        var apiMessages: [API_Message] = [
+            API_Message(role: "system", content: systemPrompt, imageData: nil)
+        ]
+
+        let history = compactConversationHistory(messages, strictFocus: strictFocus)
+        apiMessages.append(contentsOf: history.map {
+            API_Message(role: $0.role.rawValue, content: $0.content, imageData: $0.imageData)
+        })
+
+        return apiMessages
     }
     
     func handleCameraImage(_ image: UIImage) {
@@ -573,8 +624,6 @@ final class ChatViewModel: ObservableObject {
         
         currentTask = Task {
             do {
-                var contextMessages: [Message] = []
-                
                 var effectiveSystemPrompt = buildEffectiveSystemPrompt()
                 var modelToSend = selectedModel
                 
@@ -590,25 +639,12 @@ final class ChatViewModel: ObservableObject {
                 }
                 
                 effectiveSystemPrompt = appendKnowledgeBase(to: effectiveSystemPrompt)
-                
-                contextMessages.append(Message(role: .system, content: effectiveSystemPrompt))
-                
-                // Do not include internal system notes from chat history in model context.
-                let conversationHistory = currentSession.messages.filter { $0.role != .system }
-                
-                // Strict Focus Logic: If enabled, do NOT send history, only the last conversational message.
-                if UserDefaults.standard.bool(forKey: "ai_strict_focus") {
-                    if let lastMessage = conversationHistory.last {
-                        contextMessages.append(lastMessage)
-                    }
-                } else {
-                    contextMessages.append(contentsOf: conversationHistory)
-                }
-                
-                // Construct DTOs
-                let apiMessages = contextMessages.map { 
-                    API_Message(role: $0.role.rawValue, content: $0.content, imageData: $0.imageData) 
-                }
+                let strictFocus = UserDefaults.standard.bool(forKey: "ai_strict_focus")
+                let apiMessages = buildAPIContext(
+                    systemPrompt: effectiveSystemPrompt,
+                    messages: currentSession.messages,
+                    strictFocus: strictFocus
+                )
                 
                 // Create placeholder AI message
                 let aiMessage = Message(role: .assistant, content: "")
@@ -706,8 +742,6 @@ final class ChatViewModel: ObservableObject {
         incrementUsage(for: selectedModel)
         
         // 3. Prepare Context
-        var contextMessages: [Message] = []
-        
         var effectiveSystemPrompt = buildEffectiveSystemPrompt()
         var modelToSend = selectedModel
         
@@ -717,24 +751,12 @@ final class ChatViewModel: ObservableObject {
         }
         
         effectiveSystemPrompt = appendKnowledgeBase(to: effectiveSystemPrompt)
-        
-        contextMessages.append(Message(role: .system, content: effectiveSystemPrompt))
-        
-        // Do not include internal system notes from chat history in model context.
-        let conversationHistory = currentSession.messages.filter { $0.role != .system }
-        
-        // Strict Focus Logic
-        if UserDefaults.standard.bool(forKey: "ai_strict_focus") {
-            if let lastMessage = conversationHistory.last {
-                contextMessages.append(lastMessage)
-            }
-        } else {
-            contextMessages.append(contentsOf: conversationHistory)
-        }
-        
-        let apiMessages = contextMessages.map {
-            API_Message(role: $0.role.rawValue, content: $0.content, imageData: $0.imageData)
-        }
+        let strictFocus = UserDefaults.standard.bool(forKey: "ai_strict_focus")
+        let apiMessages = buildAPIContext(
+            systemPrompt: effectiveSystemPrompt,
+            messages: currentSession.messages,
+            strictFocus: strictFocus
+        )
         
         // 4. Create Placeholder for AI Response
         let aiMessage = Message(role: .assistant, content: "")
@@ -1091,16 +1113,21 @@ final class ChatViewModel: ObservableObject {
                 4. Answer in the same language as the User Query.
                 """
                 
-                var apiMessages: [API_Message] = []
-                
-                // 1. System Prompt
-                apiMessages.append(API_Message(role: "system", content: appendKnowledgeBase(to: buildEffectiveSystemPrompt()), imageData: nil))
-                
-                // 2. History (excluding the last message which is the "🔍 Поиск: ..." marker)
-                // Strict Focus Logic: If enabled, skip history
-                if !UserDefaults.standard.bool(forKey: "ai_strict_focus") {
-                    let history = currentSession.messages.dropLast()
-                    apiMessages.append(contentsOf: history.map { API_Message(role: $0.role.rawValue, content: $0.content, imageData: $0.imageData) })
+                let strictFocus = UserDefaults.standard.bool(forKey: "ai_strict_focus")
+                var apiMessages: [API_Message] = [
+                    API_Message(
+                        role: "system",
+                        content: appendKnowledgeBase(to: buildEffectiveSystemPrompt()),
+                        imageData: nil
+                    )
+                ]
+
+                // History excludes the "🔍 Поиск: ..." marker already appended above.
+                if !strictFocus {
+                    let history = compactConversationHistory(Array(currentSession.messages.dropLast()), strictFocus: false)
+                    apiMessages.append(contentsOf: history.map {
+                        API_Message(role: $0.role.rawValue, content: $0.content, imageData: $0.imageData)
+                    })
                 }
                 
                 // 3. RAG Prompt (Results + Query)
@@ -1914,6 +1941,10 @@ final class ChatViewModel: ObservableObject {
             UserDefaults.standard.set(project.id.uuidString, forKey: currentProjectIdKey)
         }
         currentSession = session
+        if let user = userSession, session.messages.isEmpty {
+            let safeId = session.ensureUUID().uuidString
+            restoreMessagesFromFirestore(userId: user.uid, chatId: safeId, session: session)
+        }
         isSidebarVisible = false
     }
     
@@ -1930,15 +1961,19 @@ final class ChatViewModel: ObservableObject {
     }
     
     func deleteSession(_ session: ChatSession) {
+        let safeId = session.ensureUUID().uuidString
+
         if let context = modelContext {
             context.delete(session)
             try? context.save()
         }
         
         if let user = userSession {
-            let safeId = session.ensureUUID().uuidString
             deleteChatAndMessagesInFirestore(userId: user.uid, chatId: safeId)
         }
+
+        lastSyncedSessionSignatures.removeValue(forKey: safeId)
+        restoredMessageChatIds.remove(safeId)
         
         if currentSession.id == session.id {
             createNewSession()
@@ -1992,6 +2027,9 @@ final class ChatViewModel: ObservableObject {
             
             try context.delete(model: ChatSession.self)
             try context.save()
+            lastSyncedSessionSignatures.removeAll()
+            lastSyncedMessageSignatures.removeAll()
+            restoredMessageChatIds.removeAll()
             
             createNewSession()
         } catch {
@@ -2528,6 +2566,10 @@ final class ChatViewModel: ObservableObject {
     private func syncSessionToFirestore(_ session: ChatSession) {
         guard let user = userSession else { return }
         let safeId = session.ensureUUID().uuidString
+        let signature = "\(session.title)|\(session.model)|\(session.lastModified.timeIntervalSince1970)"
+        if lastSyncedSessionSignatures[safeId] == signature {
+            return
+        }
         
         let data: [String: Any] = [
             "id": safeId,
@@ -2536,7 +2578,12 @@ final class ChatViewModel: ObservableObject {
             "lastModified": Timestamp(date: session.lastModified)
         ]
         
-        db.collection("users").document(user.uid).collection("chats").document(safeId).setData(data, merge: true)
+        lastSyncedSessionSignatures[safeId] = signature
+        db.collection("users").document(user.uid).collection("chats").document(safeId).setData(data, merge: true) { [weak self] error in
+            if error != nil {
+                self?.lastSyncedSessionSignatures.removeValue(forKey: safeId)
+            }
+        }
     }
     
     private func syncMessageToFirestore(_ message: Message, session: ChatSession) {
@@ -2563,12 +2610,18 @@ final class ChatViewModel: ObservableObject {
         
         let safeSessionId = session.ensureUUID().uuidString
         let safeMessageId = message.id.uuidString
+        let signature = "\(safeSessionId)|\(message.role.rawValue)|\(message.type.rawValue)|\(contentToStore.hashValue)|\(message.timestamp.timeIntervalSince1970)|\(data["imageData"] != nil)"
+        if lastSyncedMessageSignatures[safeMessageId] == signature {
+            return
+        }
+        lastSyncedMessageSignatures[safeMessageId] = signature
         
         db.collection("users").document(user.uid)
             .collection("chats").document(safeSessionId)
             .collection("messages").document(safeMessageId)
             .setData(data, merge: true) { [weak self] error in
                 if let error = error {
+                    self?.lastSyncedMessageSignatures.removeValue(forKey: safeMessageId)
                     print("Firestore message sync failed: \(error)")
                     Task { @MainActor in
                         self?.errorMessage = "Не удалось сохранить сообщение: \(error.localizedDescription)"
@@ -2606,6 +2659,11 @@ final class ChatViewModel: ObservableObject {
     }
 
     private func restoreMessagesFromFirestore(userId: String, chatId: String, session: ChatSession) {
+        if restoredMessageChatIds.contains(chatId) {
+            return
+        }
+        restoredMessageChatIds.insert(chatId)
+
         let messagesRef = db.collection("users").document(userId)
             .collection("chats").document(chatId)
             .collection("messages")
@@ -2614,6 +2672,7 @@ final class ChatViewModel: ObservableObject {
         messagesRef.getDocuments { [weak self] snapshot, error in
             guard let self = self else { return }
             if let error {
+                self.restoredMessageChatIds.remove(chatId)
                 print("Firestore messages restore failed (\(chatId)): \(error)")
                 return
             }
@@ -2685,7 +2744,11 @@ final class ChatViewModel: ObservableObject {
         guard let user = userSession else { return }
         guard modelContext != nil else { return }
 
-        let chatsRef = db.collection("users").document(user.uid).collection("chats")
+        let chatsRef = db.collection("users")
+            .document(user.uid)
+            .collection("chats")
+            .order(by: "lastModified", descending: true)
+            .limit(to: 100)
         chatsRef.getDocuments { [weak self] snapshot, error in
             guard let self = self else { return }
 
@@ -2759,7 +2822,11 @@ final class ChatViewModel: ObservableObject {
                     self.saveContext()
                 }
 
-                for pair in restoredPairs {
+                let eagerPairs = restoredPairs
+                    .sorted { $0.session.lastModified > $1.session.lastModified }
+                    .prefix(self.eagerMessageRestoreLimit)
+
+                for pair in eagerPairs {
                     self.restoreMessagesFromFirestore(userId: user.uid, chatId: pair.chatId, session: pair.session)
                 }
             }

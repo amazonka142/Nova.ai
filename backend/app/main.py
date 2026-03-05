@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import List
 
-from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi import Depends, FastAPI, HTTPException, Query, status
 from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -21,6 +21,7 @@ from .schemas import (
 )
 
 app = FastAPI(title="Nova.ai Backend", version="0.1.0")
+MAX_IMAGE_BYTES = 5 * 1024 * 1024
 
 
 def utcnow() -> datetime:
@@ -121,12 +122,23 @@ def create_chat(firebase_uid: str, payload: ChatCreate, db: Session = Depends(ge
 
 
 @app.get("/users/{firebase_uid}/chats", response_model=List[ChatRead])
-def list_chats(firebase_uid: str, db: Session = Depends(get_db)) -> List[ChatRead]:
+def list_chats(
+    firebase_uid: str,
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+) -> List[ChatRead]:
     user = db.scalar(select(User).where(User.firebase_uid == firebase_uid))
     if user is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
-    chats = db.scalars(select(Chat).where(Chat.user_id == user.id).order_by(Chat.last_modified.desc())).all()
+    chats = db.scalars(
+        select(Chat)
+        .where(Chat.user_id == user.id)
+        .order_by(Chat.last_modified.desc())
+        .limit(limit)
+        .offset(offset)
+    ).all()
     return [ChatRead.model_validate(chat) for chat in chats]
 
 
@@ -146,6 +158,11 @@ def create_message(chat_id: str, payload: MessageCreate, db: Session = Depends(g
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="image_data_base64 is not valid base64",
             ) from exc
+        if len(image_data) > MAX_IMAGE_BYTES:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail=f"image_data_base64 exceeds {MAX_IMAGE_BYTES} bytes after decoding",
+            )
 
     message = Message(
         chat_id=chat.id,
@@ -169,3 +186,25 @@ def create_message(chat_id: str, payload: MessageCreate, db: Session = Depends(g
 
     db.refresh(message)
     return MessageRead.model_validate(message)
+
+
+@app.get("/chats/{chat_id}/messages", response_model=List[MessageRead])
+def list_messages(
+    chat_id: str,
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+) -> List[MessageRead]:
+    chat_uuid = parse_uuid(chat_id, "chat_id")
+    chat = db.get(Chat, chat_uuid)
+    if chat is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chat not found")
+
+    messages = db.scalars(
+        select(Message)
+        .where(Message.chat_id == chat.id)
+        .order_by(Message.created_at.asc())
+        .limit(limit)
+        .offset(offset)
+    ).all()
+    return [MessageRead.model_validate(message) for message in messages]

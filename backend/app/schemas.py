@@ -65,7 +65,7 @@ class MessageCreate(BaseModel):
     role: Literal["user", "assistant", "system"]
     type: Literal["text", "image"] = "text"
     content: str = Field(..., min_length=1)
-    image_data_base64: Optional[str] = None
+    image_data_base64: Optional[str] = Field(default=None, max_length=7_000_000)
     created_at: Optional[datetime] = None
 
 

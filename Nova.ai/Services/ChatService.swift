@@ -93,6 +93,48 @@ final class PollinationsChatService: ChatServiceProtocol, Sendable {
             ]
         )
     }
+
+    private struct StreamRequestBody: Encodable {
+        let messages: [API_Message]
+        let model: String
+        let jsonMode: Bool
+        let stream: Bool
+    }
+
+    private struct ChatRequestBody: Encodable {
+        let messages: [API_Message]
+        let model: String
+        let jsonMode: Bool
+    }
+
+    private func flattenedPrompt(from messages: [API_Message], defaultSystem: String) -> String {
+        var promptBuilder = ""
+        let systemMsg = messages.first(where: { $0.role == "system" })?.content ?? defaultSystem
+        promptBuilder += "System: \(systemMsg)\n\n"
+        for msg in messages where msg.role != "system" {
+            promptBuilder += "\(msg.role == "user" ? "User" : "Nova"): \(msg.content)\n"
+        }
+        promptBuilder += "Nova:"
+        return promptBuilder
+    }
+
+    private func makePromptOnlyBody(
+        from messages: [API_Message],
+        model: String,
+        stream: Bool,
+        defaultSystem: String
+    ) throws -> Data {
+        let prompt = flattenedPrompt(from: messages, defaultSystem: defaultSystem)
+        let singleMessage = API_Message(role: "user", content: prompt, imageData: nil)
+
+        if stream {
+            let body = StreamRequestBody(messages: [singleMessage], model: model, jsonMode: false, stream: true)
+            return try JSONEncoder().encode(body)
+        }
+
+        let body = ChatRequestBody(messages: [singleMessage], model: model, jsonMode: false)
+        return try JSONEncoder().encode(body)
+    }
     
     // ... sendMessage implementation ...
     
@@ -112,44 +154,13 @@ final class PollinationsChatService: ChatServiceProtocol, Sendable {
                         request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData // Игнорируем кэш соединения
                         
                         let hasImages = messages.contains { $0.imageData != nil }
-                        let body: [String: Any]
-                        
-                        // Re-use logic for body construction, but add "stream": true
-                        if hasImages {
-                            // Pollinations gateway can stringify structured multimodal content as "[object Object]".
-                            // Use a pure-text fallback for all models to keep responses reliable.
-                            var promptBuilder = ""
-                            let systemMsg = messages.first(where: { $0.role == "system" })?.content ?? "You are Nova."
-                            promptBuilder += "System: \(systemMsg)\n\n"
-                            for msg in messages where msg.role != "system" {
-                                promptBuilder += "\(msg.role == "user" ? "User" : "Nova"): \(msg.content)\n"
-                            }
-                            promptBuilder += "Nova:"
-                            
-                            let singleMessage = API_Message(role: "user", content: promptBuilder, imageData: nil)
-                            
-                            struct RequestBody: Encodable { let messages: [API_Message]; let model: String; let jsonMode: Bool; let stream: Bool }
-                            let requestData = RequestBody(messages: [singleMessage], model: model, jsonMode: false, stream: true)
-                            request.httpBody = try JSONEncoder().encode(requestData)
-                        } else {
-                            // Text Strategy (Goldfish Fix)
-                            var promptBuilder = ""
-                            let systemMsg = messages.first(where: { $0.role == "system" })?.content 
-                                ?? "You are Nova. Be concise."
-                            promptBuilder += "System: \(systemMsg)\n\n"
-                            for msg in messages where msg.role != "system" {
-                                promptBuilder += "\(msg.role == "user" ? "User" : "Nova"): \(msg.content)\n"
-                            }
-                            promptBuilder += "Nova:"
-                            
-                            body = [
-                                "messages": [["role": "user", "content": promptBuilder]],
-                                "model": model,
-                                "jsonMode": false,
-                                "stream": true
-                            ]
-                            request.httpBody = try JSONSerialization.data(withJSONObject: body)
-                        }
+                        let defaultSystem = hasImages ? "You are Nova." : "You are Nova. Be concise."
+                        request.httpBody = try makePromptOnlyBody(
+                            from: messages,
+                            model: model,
+                            stream: true,
+                            defaultSystem: defaultSystem
+                        )
                         
                         let (bytes, response) = try await URLSession.shared.bytes(for: request)
                         
@@ -223,54 +234,15 @@ final class PollinationsChatService: ChatServiceProtocol, Sendable {
         request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
         
         let hasImages = messages.contains { $0.imageData != nil }
-        
-        // Handle Request Body Construction
-        if hasImages {
-            // Pollinations gateway can stringify structured multimodal content as "[object Object]".
-            // Use a pure-text fallback for all models to keep responses reliable.
-            var promptBuilder = ""
-            let systemMsg = messages.first(where: { $0.role == "system" })?.content ?? "You are Nova."
-            promptBuilder += "System: \(systemMsg)\n\n"
-            for msg in messages where msg.role != "system" {
-                promptBuilder += "\(msg.role == "user" ? "User" : "Nova"): \(msg.content)\n"
-            }
-            promptBuilder += "Nova:"
-            
-            let singleMessage = API_Message(role: "user", content: promptBuilder, imageData: nil)
-            
-            struct RequestBody: Encodable { let messages: [API_Message]; let model: String; let jsonMode: Bool }
-            let requestData = RequestBody(messages: [singleMessage], model: model, jsonMode: false)
-            request.httpBody = try JSONEncoder().encode(requestData)
-            
-        } else {
-            // STRATEGY B: Manual Prompt (Text Only) - The "Goldfish Fix"
-            var promptBuilder = ""
-            
-            // 1. Add System Instruction
-            let systemMsg = messages.first(where: { $0.role == "system" })?.content 
-                ?? "You are Nova, a helpful AI assistant. Be concise. Do NOT greet the user in every message. Keep the conversation natural."
-            
-            promptBuilder += "System: \(systemMsg)\n\n"
-            
-            // 2. Append Conversation History
-            for msg in messages where msg.role != "system" {
-                let roleName = msg.role == "user" ? "User" : "Nova"
-                promptBuilder += "\(roleName): \(msg.content)\n"
-            }
-            
-            promptBuilder += "Nova:"
-            
-            let apiMessages = [
-                ["role": "user", "content": promptBuilder]
-            ]
-            
-            let body: [String: Any] = [
-                "messages": apiMessages,
-                "model": model,
-                "jsonMode": false
-            ]
-            request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        }
+        let defaultSystem = hasImages
+            ? "You are Nova."
+            : "You are Nova, a helpful AI assistant. Be concise. Do NOT greet the user in every message. Keep the conversation natural."
+        request.httpBody = try makePromptOnlyBody(
+            from: messages,
+            model: model,
+            stream: false,
+            defaultSystem: defaultSystem
+        )
         
         // Retry Logic
         var lastError: Error?

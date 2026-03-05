@@ -1,3 +1,4 @@
+import base64
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
@@ -297,6 +298,22 @@ def test_create_message_returns_400_for_invalid_base64(client, fake_db):
     assert response.json()["detail"] == "image_data_base64 is not valid base64"
 
 
+def test_create_message_returns_413_for_too_large_image(client, fake_db):
+    chat = _build_chat(user_id=uuid.uuid4(), external_id="chat-large-image")
+    fake_db.get_values[chat.id] = chat
+    too_large_bytes = b"a" * ((5 * 1024 * 1024) + 1)
+    payload = {
+        "external_id": "msg-large",
+        "role": "user",
+        "type": "image",
+        "content": "image",
+        "image_data_base64": base64.b64encode(too_large_bytes).decode("utf-8"),
+    }
+    response = client.post(f"/chats/{chat.id}/messages", json=payload)
+    assert response.status_code == 413
+    assert "exceeds" in response.json()["detail"]
+
+
 def test_create_message_returns_201(client, fake_db):
     chat = _build_chat(user_id=uuid.uuid4(), external_id="chat-ok")
     fake_db.get_values[chat.id] = chat
@@ -319,6 +336,26 @@ def test_create_message_returns_409_on_integrity_error(client, fake_db):
     assert response.status_code == 409
     assert response.json()["detail"] == "Message with this external_id already exists for the chat."
     assert fake_db.did_rollback is True
+
+
+def test_list_messages_returns_404_when_chat_missing(client):
+    response = client.get(f"/chats/{uuid.uuid4()}/messages")
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Chat not found"
+
+
+def test_list_messages_returns_messages(client, fake_db):
+    chat = _build_chat(user_id=uuid.uuid4(), external_id="chat-list-msg")
+    fake_db.get_values[chat.id] = chat
+    msg_one = _build_message(chat.id, external_id="msg-one")
+    msg_two = _build_message(chat.id, external_id="msg-two")
+    fake_db.scalars_values = [[msg_one, msg_two]]
+
+    response = client.get(f"/chats/{chat.id}/messages?limit=2&offset=0")
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body) == 2
+    assert {body[0]["external_id"], body[1]["external_id"]} == {"msg-one", "msg-two"}
 
 
 def test_message_factory_has_expected_defaults():

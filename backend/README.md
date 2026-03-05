@@ -41,8 +41,9 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 - `POST /users` — upsert пользователя по `firebase_uid`
 - `GET /users/{firebase_uid}`
 - `POST /users/{firebase_uid}/chats`
-- `GET /users/{firebase_uid}/chats`
+- `GET /users/{firebase_uid}/chats?limit=50&offset=0`
 - `POST /chats/{chat_id}/messages`
+- `GET /chats/{chat_id}/messages?limit=100&offset=0`
 
 ## Тесты
 ```bash

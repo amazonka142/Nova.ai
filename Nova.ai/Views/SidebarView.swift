@@ -41,6 +41,9 @@ struct SidebarView: View {
     private var groupedSessions: [(String, [ChatSession])] {
         let calendar = Calendar.current
         var sections: [(String, [ChatSession])] = []
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: selectedLanguage == .russian ? "ru_RU" : "en_US")
+        formatter.dateFormat = "d MMMM"
         
         // Filter out sessions that are in a folder
         let filteredSessions = projectSessions.filter { $0.folder == nil }
@@ -52,9 +55,6 @@ struct SidebarView: View {
             } else if calendar.isDateInYesterday(session.lastModified) {
                 key = selectedLanguage == .russian ? "Вчера" : "Yesterday"
             } else {
-                let formatter = DateFormatter()
-                formatter.locale = Locale(identifier: selectedLanguage == .russian ? "ru_RU" : "en_US")
-                formatter.dateFormat = "d MMMM"
                 key = formatter.string(from: session.lastModified)
             }
             
