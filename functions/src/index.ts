@@ -8,7 +8,7 @@ const db = getFirestore();
 const USERS_COLLECTION = "users";
 const BATCH_SIZE = 400;
 
-async function updateAllUsers(update: FirebaseFirestore.UpdateData): Promise<number> {
+async function updateAllUsers(update: FirebaseFirestore.UpdateData<FirebaseFirestore.DocumentData>): Promise<number> {
   let lastDoc: FirebaseFirestore.QueryDocumentSnapshot | null = null;
   let totalUpdated = 0;
 
@@ -39,7 +39,7 @@ async function updateAllUsers(update: FirebaseFirestore.UpdateData): Promise<num
 export const resetDailyLimits = onSchedule(
   { schedule: "0 0 * * *", timeZone: "UTC" },
   async () => {
-    const update: FirebaseFirestore.UpdateData = {
+    const update: FirebaseFirestore.UpdateData<FirebaseFirestore.DocumentData> = {
       dailyRequestCount: 0,
       modelUsage: {},
       lastRequestDate: FieldValue.serverTimestamp()
@@ -51,7 +51,7 @@ export const resetDailyLimits = onSchedule(
 export const resetWeeklyLimits = onSchedule(
   { schedule: "0 0 * * 1", timeZone: "UTC" },
   async () => {
-    const update: FirebaseFirestore.UpdateData = {
+    const update: FirebaseFirestore.UpdateData<FirebaseFirestore.DocumentData> = {
       weeklyModelUsage: {},
       lastWeeklyResetDate: FieldValue.serverTimestamp()
     };

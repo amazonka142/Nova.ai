@@ -8,10 +8,10 @@ import PDFKit
 import AVFoundation
 import Speech
 import FirebaseCore
-import FirebaseAuth
-import FirebaseFirestore
+@preconcurrency import FirebaseAuth
+@preconcurrency import FirebaseFirestore
 import AuthenticationServices
-import FirebaseStorage
+@preconcurrency import FirebaseStorage
 import GoogleSignIn
 import UserNotifications
 import UIKit
@@ -161,8 +161,9 @@ final class ChatViewModel: ObservableObject {
     }
     @Published var appUpdate: AppUpdate?
     
-    private let db = Firestore.firestore()
-    private let storage = Storage.storage()
+    private let isFirebaseConfigured: Bool
+    private let db: Firestore?
+    private let storage: Storage?
     private var usageListener: ListenerRegistration?
     private var networkTimeOffset: TimeInterval?
     private var researchSaveWorkItem: DispatchWorkItem?
@@ -202,7 +203,20 @@ final class ChatViewModel: ObservableObject {
     // Apple Sign In Nonce
     private var currentNonce: String?
     
+    private var auth: Auth? {
+        guard isFirebaseConfigured else { return nil }
+        return Auth.auth()
+    }
+    
+    private var firebaseUnavailableMessage: String {
+        "Firebase не настроен. Приложение работает только в локальном режиме."
+    }
+    
     init(service: ChatServiceProtocol? = nil, context: ModelContext? = nil) {
+        let firebaseConfigured = FirebaseApp.app() != nil
+        self.isFirebaseConfigured = firebaseConfigured
+        self.db = firebaseConfigured ? Firestore.firestore() : nil
+        self.storage = firebaseConfigured ? Storage.storage() : nil
         self.chatService = service ?? PollinationsChatService()
         self.modelContext = context
         
@@ -214,21 +228,23 @@ final class ChatViewModel: ObservableObject {
         self.checkForUpdates()
         
         // Listen to Auth changes
-        _ = Auth.auth().addStateDidChangeListener { [weak self] _, user in
-            self?.userSession = user
-            if let user = user {
-                self?.restoredMessageChatIds.removeAll()
-                self?.setupUsageListener(userId: user.uid)
-                self?.restoreHistory()
-                if user.isAnonymous {
-                    self?.selectedModel = "mistral"
+        if let auth {
+            _ = auth.addStateDidChangeListener { [weak self] _, user in
+                self?.userSession = user
+                if let user = user {
+                    self?.restoredMessageChatIds.removeAll()
+                    self?.setupUsageListener(userId: user.uid)
+                    self?.restoreHistory()
+                    if user.isAnonymous {
+                        self?.selectedModel = "mistral"
+                    }
+                } else {
+                    self?.usageListener?.remove()
+                    self?.dailyRequestCount = 0
+                    self?.lastSyncedSessionSignatures.removeAll()
+                    self?.lastSyncedMessageSignatures.removeAll()
+                    self?.restoredMessageChatIds.removeAll()
                 }
-            } else {
-                self?.usageListener?.remove()
-                self?.dailyRequestCount = 0
-                self?.lastSyncedSessionSignatures.removeAll()
-                self?.lastSyncedMessageSignatures.removeAll()
-                self?.restoredMessageChatIds.removeAll()
             }
         }
     }
@@ -276,7 +292,7 @@ final class ChatViewModel: ObservableObject {
         isVoiceModePresented = true
     }
 
-    private func requestMicrophonePermission(_ completion: @escaping (Bool) -> Void) {
+    private func requestMicrophonePermission(_ completion: @escaping @Sendable (Bool) -> Void) {
         if #available(iOS 17.0, *) {
             AVAudioApplication.requestRecordPermission(completionHandler: completion)
         } else {
@@ -441,10 +457,18 @@ final class ChatViewModel: ObservableObject {
 
         let history = compactConversationHistory(messages, strictFocus: strictFocus)
         apiMessages.append(contentsOf: history.map {
-            API_Message(role: $0.role.rawValue, content: $0.content, imageData: $0.imageData)
+            API_Message(
+                role: $0.role.rawValue,
+                content: $0.content,
+                imageData: $0.role == .user ? $0.imageData : nil
+            )
         })
 
         return apiMessages
+    }
+
+    private func supportsVision(_ model: String) -> Bool {
+        model == "mistral"
     }
     
     func handleCameraImage(_ image: UIImage) {
@@ -645,6 +669,10 @@ final class ChatViewModel: ObservableObject {
                     messages: currentSession.messages,
                     strictFocus: strictFocus
                 )
+
+                if apiMessages.contains(where: { $0.imageData != nil }) && !supportsVision(modelToSend) {
+                    modelToSend = "mistral"
+                }
                 
                 // Create placeholder AI message
                 let aiMessage = Message(role: .assistant, content: "")
@@ -1297,6 +1325,7 @@ final class ChatViewModel: ObservableObject {
     }
     
     func checkForUpdates() {
+        guard let db else { return }
         // Текущая версия (соответствует SettingsView)
         // Capture locally to avoid MainActor isolation issues in the closure
         let currentVersion = ChatViewModel.appVersion
@@ -1309,16 +1338,20 @@ final class ChatViewModel: ObservableObject {
                latestVersion.compare(currentVersion, options: .numeric) == .orderedDescending {
                 
                 let changelog = data["changelog"] as? String ?? "Исправления ошибок и улучшения производительности."
-                let url = sanitizeUpdateURLString(data["download_url"] as? String)
+                let url = Self.sanitizeUpdateURLString(data["download_url"] as? String)
                 
-                DispatchQueue.main.async {
-                    self.appUpdate = AppUpdate(version: latestVersion, changelog: changelog, downloadURL: url)
+                Task { @MainActor [weak self] in
+                    self?.appUpdate = AppUpdate(version: latestVersion, changelog: changelog, downloadURL: url)
                 }
             }
         }
     }
 
     func validatedUpdateURL(from rawValue: String) -> URL? {
+        Self.validatedUpdateURL(rawValue)
+    }
+
+    nonisolated private static func validatedUpdateURL(_ rawValue: String) -> URL? {
         let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, let url = URL(string: trimmed) else { return nil }
         guard url.scheme?.lowercased() == "https", let host = url.host?.lowercased() else { return nil }
@@ -1327,9 +1360,9 @@ final class ChatViewModel: ObservableObject {
         return isAllowedHost ? url : nil
     }
 
-    private func sanitizeUpdateURLString(_ candidate: String?) -> String {
+    nonisolated private static func sanitizeUpdateURLString(_ candidate: String?) -> String {
         let fallback = "https://t.me/Vladik40perc"
-        guard let candidate, let url = validatedUpdateURL(from: candidate) else { return fallback }
+        guard let candidate, let url = validatedUpdateURL(candidate) else { return fallback }
         return url.absoluteString
     }
     
@@ -1965,7 +1998,7 @@ final class ChatViewModel: ObservableObject {
         currentSession = session
         if let user = userSession, session.messages.isEmpty {
             let safeId = session.ensureUUID().uuidString
-            restoreMessagesFromFirestore(userId: user.uid, chatId: safeId, session: session)
+            restoreMessagesFromFirestore(userId: user.uid, chatId: safeId, sessionId: safeId)
         }
         isSidebarVisible = false
     }
@@ -2070,59 +2103,59 @@ final class ChatViewModel: ObservableObject {
     }
 
     private func deleteChatAndMessagesInFirestore(userId: String, chatId: String) {
+        guard let db else { return }
         let chatRef = db.collection("users").document(userId).collection("chats").document(chatId)
-        deleteMessagesBatch(in: chatRef) { [weak self] error in
-            guard let error else { return }
-            print("Firestore chat deletion failed (\(chatId)): \(error)")
-            Task { @MainActor in
+        Task { @MainActor [weak self] in
+            do {
+                try await self?.deleteMessagesBatch(in: chatRef)
+            } catch {
+                print("Firestore chat deletion failed (\(chatId)): \(error)")
                 self?.errorMessage = "Не удалось удалить чат из облака: \(error.localizedDescription)"
             }
         }
     }
 
     // Firestore doesn't cascade-delete subcollections. Remove message docs first, then delete chat doc.
-    private func deleteMessagesBatch(in chatRef: DocumentReference, completion: @escaping (Error?) -> Void) {
-        chatRef.collection("messages").limit(to: 200).getDocuments { snapshot, error in
-            if let error {
-                completion(error)
-                return
-            }
-            guard let documents = snapshot?.documents, !documents.isEmpty else {
-                chatRef.delete(completion: completion)
-                return
-            }
-
-            let batch = self.db.batch()
-            documents.forEach { batch.deleteDocument($0.reference) }
-            batch.commit { error in
-                if let error {
-                    completion(error)
-                    return
-                }
-                self.deleteMessagesBatch(in: chatRef, completion: completion)
-            }
+    private func deleteMessagesBatch(in chatRef: DocumentReference) async throws {
+        guard let db else { return }
+        let snapshot = try await chatRef.collection("messages").limit(to: 200).getDocuments()
+        guard !snapshot.documents.isEmpty else {
+            try await chatRef.delete()
+            return
         }
+
+        let batch = db.batch()
+        snapshot.documents.forEach { batch.deleteDocument($0.reference) }
+        try await batch.commit()
+        try await deleteMessagesBatch(in: chatRef)
     }
     
     // MARK: - Profile Management
     
     func updateUserName(name: String) async {
-        guard let user = Auth.auth().currentUser, !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        guard let auth, let user = auth.currentUser, !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            errorMessage = firebaseUnavailableMessage
+            return
+        }
         let changeRequest = user.createProfileChangeRequest()
         changeRequest.displayName = name
         do {
             try await changeRequest.commitChanges()
             // The auth state listener will update userSession, but this makes it feel more instant.
-            self.userSession = Auth.auth().currentUser
+            self.userSession = auth.currentUser
         } catch {
             await MainActor.run {
                 self.errorMessage = "Не удалось обновить имя: \(error.localizedDescription)"
             }
         }
     }
-
+    
     func updateUserProfilePhoto(item: PhotosPickerItem?) async {
         guard let item = item else { return }
+        guard let storage, let auth else {
+            await MainActor.run { errorMessage = firebaseUnavailableMessage }
+            return
+        }
         
         await MainActor.run { isLoading = true }
         
@@ -2154,13 +2187,13 @@ final class ChatViewModel: ObservableObject {
             let downloadURL = try await storageRef.downloadURL()
             
             // 5. Update Firebase Auth profile
-            guard let user = Auth.auth().currentUser else { return }
+            guard let user = auth.currentUser else { return }
             let changeRequest = user.createProfileChangeRequest()
             changeRequest.photoURL = downloadURL
             try await changeRequest.commitChanges()
             
             // 6. Refresh local user session
-            self.userSession = Auth.auth().currentUser
+            self.userSession = auth.currentUser
             
         } catch {
             await MainActor.run {
@@ -2172,8 +2205,15 @@ final class ChatViewModel: ObservableObject {
     // MARK: - Authentication Logic
     
     func signOut() {
+        guard let auth else {
+            userSession = nil
+            isPro = false
+            isMax = false
+            dailyRequestCount = 0
+            return
+        }
         do {
-            try Auth.auth().signOut()
+            try auth.signOut()
             userSession = nil
             // Сбрасываем локальные права доступа при выходе
             self.isPro = false
@@ -2187,7 +2227,12 @@ final class ChatViewModel: ObservableObject {
     func signInAnonymously() {
         isLoading = true
         errorMessage = nil
-        Auth.auth().signInAnonymously { [weak self] authResult, error in
+        guard let auth else {
+            isLoading = false
+            errorMessage = firebaseUnavailableMessage
+            return
+        }
+        auth.signInAnonymously { [weak self] authResult, error in
             DispatchQueue.main.async {
                 self?.isLoading = false
                 if let error = error {
@@ -2234,8 +2279,12 @@ final class ChatViewModel: ObservableObject {
                 fullName: appleIDCredential.fullName
             )
 
+            guard let auth else {
+                errorMessage = firebaseUnavailableMessage
+                return
+            }
             
-            Auth.auth().signIn(with: credential) { (authResult, error) in
+            auth.signIn(with: credential) { (authResult, error) in
                 if let error = error {
                     self.errorMessage = error.localizedDescription
                     return
@@ -2255,7 +2304,10 @@ final class ChatViewModel: ObservableObject {
     }
     
     func signInWithGoogle() {
-        guard let clientID = FirebaseApp.app()?.options.clientID else { return }
+        guard isFirebaseConfigured, let clientID = FirebaseApp.app()?.options.clientID else {
+            errorMessage = firebaseUnavailableMessage
+            return
+        }
         let config = GIDConfiguration(clientID: clientID)
         GIDSignIn.sharedInstance.configuration = config
         
@@ -2299,6 +2351,7 @@ final class ChatViewModel: ObservableObject {
     
     func setupUsageListener(userId: String) {
         usageListener?.remove()
+        guard let db else { return }
         let docRef = db.collection("users").document(userId)
         
         usageListener = docRef.addSnapshotListener { [weak self] snapshot, error in
@@ -2485,8 +2538,16 @@ final class ChatViewModel: ObservableObject {
         return !allowedFree.contains(modelId)
     }
     
+    private func incrementLocalUsage(for model: String) {
+        dailyRequestCount += 1
+        modelUsage[model, default: 0] += 1
+        weeklyModelUsage[model, default: 0] += 1
+        lastRequestDate = Date()
+    }
+    
     private func incrementUsage(for model: String) {
-        guard let user = userSession else { return }
+        incrementLocalUsage(for: model)
+        guard let user = userSession, let db else { return }
         let docRef = db.collection("users").document(user.uid)
         
         db.runTransaction({ (transaction, errorPointer) -> Any? in
@@ -2540,6 +2601,7 @@ final class ChatViewModel: ObservableObject {
     }
     
     private func disableExpiredSubscription(userId: String, dateStr: String) {
+        guard let db else { return }
         db.collection("users").document(userId).updateData([
             "isPro": false,
             "isMax": false,
@@ -2548,6 +2610,7 @@ final class ChatViewModel: ObservableObject {
     }
     
     private func updateSubscriptionDate(userId: String, date: Date) {
+        guard let db else { return }
         db.collection("users").document(userId).updateData([
             "subscriptionExpirationDate": Timestamp(date: date)
         ])
@@ -2586,7 +2649,7 @@ final class ChatViewModel: ObservableObject {
     // MARK: - Firestore Sync
     
     private func syncSessionToFirestore(_ session: ChatSession) {
-        guard let user = userSession else { return }
+        guard let user = userSession, let db else { return }
         let safeId = session.ensureUUID().uuidString
         let signature = "\(session.title)|\(session.model)|\(session.lastModified.timeIntervalSince1970)"
         if lastSyncedSessionSignatures[safeId] == signature {
@@ -2603,13 +2666,15 @@ final class ChatViewModel: ObservableObject {
         lastSyncedSessionSignatures[safeId] = signature
         db.collection("users").document(user.uid).collection("chats").document(safeId).setData(data, merge: true) { [weak self] error in
             if error != nil {
-                self?.lastSyncedSessionSignatures.removeValue(forKey: safeId)
+                DispatchQueue.main.async {
+                    self?.lastSyncedSessionSignatures.removeValue(forKey: safeId)
+                }
             }
         }
     }
     
     private func syncMessageToFirestore(_ message: Message, session: ChatSession) {
-        guard let user = userSession else { return }
+        guard let user = userSession, let db else { return }
         let contentToStore: String
         if message.content.count > maxFirestoreContentChars {
             contentToStore = String(message.content.prefix(maxFirestoreContentChars)) + "\n\n[TRUNCATED]"
@@ -2643,9 +2708,9 @@ final class ChatViewModel: ObservableObject {
             .collection("messages").document(safeMessageId)
             .setData(data, merge: true) { [weak self] error in
                 if let error = error {
-                    self?.lastSyncedMessageSignatures.removeValue(forKey: safeMessageId)
                     print("Firestore message sync failed: \(error)")
-                    Task { @MainActor in
+                    DispatchQueue.main.async {
+                        self?.lastSyncedMessageSignatures.removeValue(forKey: safeMessageId)
                         self?.errorMessage = "Не удалось сохранить сообщение: \(error.localizedDescription)"
                     }
                 }
@@ -2653,7 +2718,7 @@ final class ChatViewModel: ObservableObject {
     }
     
     private func syncSubscriptionToFirestore() {
-        guard let user = userSession else { return }
+        guard let user = userSession, let db else { return }
         db.collection("users").document(user.uid).setData([
             "isPro": isPro,
             "isMax": isMax
@@ -2680,7 +2745,18 @@ final class ChatViewModel: ObservableObject {
         }
     }
 
-    private func restoreMessagesFromFirestore(userId: String, chatId: String, session: ChatSession) {
+    private func sessionForRestore(chatId: String) -> ChatSession? {
+        guard let chatUUID = UUID(uuidString: chatId) else { return nil }
+        if currentSession.uuid == chatUUID {
+            return currentSession
+        }
+        guard let context = modelContext else { return nil }
+        let descriptor = FetchDescriptor<ChatSession>()
+        return (try? context.fetch(descriptor))?.first(where: { $0.uuid == chatUUID })
+    }
+
+    private func restoreMessagesFromFirestore(userId: String, chatId: String, sessionId: String) {
+        guard let db else { return }
         if restoredMessageChatIds.contains(chatId) {
             return
         }
@@ -2692,16 +2768,22 @@ final class ChatViewModel: ObservableObject {
             .order(by: "createdAt")
 
         messagesRef.getDocuments { [weak self] snapshot, error in
-            guard let self = self else { return }
             if let error {
-                self.restoredMessageChatIds.remove(chatId)
                 print("Firestore messages restore failed (\(chatId)): \(error)")
+                DispatchQueue.main.async {
+                    self?.restoredMessageChatIds.remove(chatId)
+                }
                 return
             }
 
             guard let documents = snapshot?.documents, !documents.isEmpty else { return }
 
-            Task { @MainActor in
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                guard let session = self.sessionForRestore(chatId: sessionId) else {
+                    self.restoredMessageChatIds.remove(chatId)
+                    return
+                }
                 var existingById: [UUID: Message] = [:]
                 for message in session.messages {
                     existingById[message.id] = message
@@ -2763,11 +2845,12 @@ final class ChatViewModel: ObservableObject {
     }
     
     private func restoreHistory() {
-        guard let user = userSession else { return }
+        guard let user = userSession, let db else { return }
         guard modelContext != nil else { return }
+        let userId = user.uid
 
         let chatsRef = db.collection("users")
-            .document(user.uid)
+            .document(userId)
             .collection("chats")
             .order(by: "lastModified", descending: true)
             .limit(to: 100)
@@ -2849,7 +2932,7 @@ final class ChatViewModel: ObservableObject {
                     .prefix(self.eagerMessageRestoreLimit)
 
                 for pair in eagerPairs {
-                    self.restoreMessagesFromFirestore(userId: user.uid, chatId: pair.chatId, session: pair.session)
+                    self.restoreMessagesFromFirestore(userId: userId, chatId: pair.chatId, sessionId: pair.chatId)
                 }
             }
         }

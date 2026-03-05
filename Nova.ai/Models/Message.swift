@@ -39,6 +39,6 @@ final class Message {
         self.type = type
         self.imageData = imageData
         self.timestamp = Date()
-        self.feedback = .none
+        self.feedback = FeedbackStatus.none
     }
 }

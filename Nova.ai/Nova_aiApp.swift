@@ -24,6 +24,22 @@ class NovaAppCheckProviderFactory: NSObject, AppCheckProviderFactory {
 }
 
 class AppDelegate: NSObject, UIApplicationDelegate {
+  private func looksLikeConfiguredFirebaseOptions(_ options: FirebaseOptions) -> Bool {
+    let placeholderMarkers = ["REPLACE", "YOUR_", "<"]
+
+    func isValid(_ value: String?) -> Bool {
+      guard let value else { return false }
+      let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+      guard !trimmed.isEmpty else { return false }
+      return !placeholderMarkers.contains(where: { trimmed.uppercased().contains($0) })
+    }
+
+    return isValid(options.googleAppID)
+      && isValid(options.gcmSenderID)
+      && isValid(options.apiKey)
+      && isValid(options.projectID)
+  }
+
   func application(_ application: UIApplication,
                    didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey : Any]? = nil) -> Bool {
     
@@ -32,11 +48,12 @@ class AppDelegate: NSObject, UIApplicationDelegate {
     AppCheck.setAppCheckProviderFactory(providerFactory)
     
     if let configPath = Bundle.main.path(forResource: "GoogleService-Info", ofType: "plist"),
-       let options = FirebaseOptions(contentsOfFile: configPath) {
+       let options = FirebaseOptions(contentsOfFile: configPath),
+       looksLikeConfiguredFirebaseOptions(options) {
       FirebaseApp.configure(options: options)
     } else {
       #if DEBUG
-      print("Firebase is not configured. Add Nova.ai/GoogleService-Info.plist locally to enable Firebase features.")
+      print("Firebase is not configured. Copy GoogleService-Info.plist.example to Nova.ai/GoogleService-Info.plist to enable Firebase features.")
       #endif
     }
     return true

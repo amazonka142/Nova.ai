@@ -107,6 +107,20 @@ final class PollinationsChatService: ChatServiceProtocol, Sendable {
         let jsonMode: Bool
     }
 
+    private func makeStructuredBody(
+        from messages: [API_Message],
+        model: String,
+        stream: Bool
+    ) throws -> Data {
+        if stream {
+            let body = StreamRequestBody(messages: messages, model: model, jsonMode: false, stream: true)
+            return try JSONEncoder().encode(body)
+        }
+
+        let body = ChatRequestBody(messages: messages, model: model, jsonMode: false)
+        return try JSONEncoder().encode(body)
+    }
+
     private func flattenedPrompt(from messages: [API_Message], defaultSystem: String) -> String {
         var promptBuilder = ""
         let systemMsg = messages.first(where: { $0.role == "system" })?.content ?? defaultSystem
@@ -135,6 +149,38 @@ final class PollinationsChatService: ChatServiceProtocol, Sendable {
         let body = ChatRequestBody(messages: [singleMessage], model: model, jsonMode: false)
         return try JSONEncoder().encode(body)
     }
+
+    private func makeRequestBody(
+        from messages: [API_Message],
+        model: String,
+        stream: Bool,
+        defaultSystem: String,
+        forcePromptFallback: Bool
+    ) throws -> Data {
+        if forcePromptFallback {
+            return try makePromptOnlyBody(
+                from: messages,
+                model: model,
+                stream: stream,
+                defaultSystem: defaultSystem
+            )
+        }
+
+        return try makeStructuredBody(from: messages, model: model, stream: stream)
+    }
+
+    private func shouldFallbackToPromptTransport(_ error: Error) -> Bool {
+        let nsError = error as NSError
+        if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCannotDecodeContentData {
+            return true
+        }
+
+        guard let statusCode = nsError.userInfo["httpStatus"] as? Int else {
+            return false
+        }
+
+        return [400, 404, 415, 422].contains(statusCode)
+    }
     
     // ... sendMessage implementation ...
     
@@ -142,6 +188,8 @@ final class PollinationsChatService: ChatServiceProtocol, Sendable {
         return AsyncThrowingStream { continuation in
             Task {
                 var lastError: Error?
+                let hasImages = messages.contains { $0.imageData != nil }
+                var usePromptFallback = false
                 // Цикл повторных попыток (до 3 раз)
                 for attempt in 0..<3 {
                     do {
@@ -153,13 +201,13 @@ final class PollinationsChatService: ChatServiceProtocol, Sendable {
                         request.timeoutInterval = 60 // Увеличенный таймаут для стриминга
                         request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData // Игнорируем кэш соединения
                         
-                        let hasImages = messages.contains { $0.imageData != nil }
                         let defaultSystem = hasImages ? "You are Nova." : "You are Nova. Be concise."
-                        request.httpBody = try makePromptOnlyBody(
+                        request.httpBody = try makeRequestBody(
                             from: messages,
                             model: model,
                             stream: true,
-                            defaultSystem: defaultSystem
+                            defaultSystem: defaultSystem,
+                            forcePromptFallback: usePromptFallback
                         )
                         
                         let (bytes, response) = try await URLSession.shared.bytes(for: request)
@@ -196,6 +244,10 @@ final class PollinationsChatService: ChatServiceProtocol, Sendable {
                         
                     } catch {
                         lastError = error
+                        if !hasImages && !usePromptFallback && shouldFallbackToPromptTransport(error) {
+                            usePromptFallback = true
+                            continue
+                        }
                         let nsError = error as NSError
                         // Повторяем только при потере соединения (-1005) или таймауте (-1001)
                         if nsError.domain == NSURLErrorDomain && (nsError.code == NSURLErrorNetworkConnectionLost || nsError.code == NSURLErrorTimedOut) {
@@ -237,17 +289,20 @@ final class PollinationsChatService: ChatServiceProtocol, Sendable {
         let defaultSystem = hasImages
             ? "You are Nova."
             : "You are Nova, a helpful AI assistant. Be concise. Do NOT greet the user in every message. Keep the conversation natural."
-        request.httpBody = try makePromptOnlyBody(
-            from: messages,
-            model: model,
-            stream: false,
-            defaultSystem: defaultSystem
-        )
         
         // Retry Logic
         var lastError: Error?
+        var usePromptFallback = false
         for _ in 0..<3 {
             do {
+                request.httpBody = try makeRequestBody(
+                    from: messages,
+                    model: model,
+                    stream: false,
+                    defaultSystem: defaultSystem,
+                    forcePromptFallback: usePromptFallback
+                )
+
                 // Execute Request
                 let (data, response) = try await URLSession.shared.data(for: request)
                 
@@ -287,6 +342,10 @@ final class PollinationsChatService: ChatServiceProtocol, Sendable {
                 
             } catch {
                 lastError = error
+                if !hasImages && !usePromptFallback && shouldFallbackToPromptTransport(error) {
+                    usePromptFallback = true
+                    continue
+                }
                 let nsError = error as NSError
                 if nsError.domain == NSURLErrorDomain && (nsError.code == NSURLErrorNetworkConnectionLost || nsError.code == NSURLErrorTimedOut) {
                     try? await Task.sleep(nanoseconds: 500_000_000)

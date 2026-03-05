@@ -31,7 +31,7 @@ Nova.ai uses pollinations.ai APIs in two core flows:
 2. Configure app keys in `Nova-ai-Info.plist` (at minimum `POLLINATIONS_API_KEY`).
 3. If you use Firebase, copy and configure:
    ```bash
-   cp GoogleService-Info.plist.example GoogleService-Info.plist
+   cp GoogleService-Info.plist.example Nova.ai/GoogleService-Info.plist
    ```
 4. In Xcode, select the `Nova.ai` scheme and run (`Cmd+R`).
 

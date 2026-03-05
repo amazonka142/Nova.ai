@@ -259,7 +259,7 @@ class VoiceChatViewModel: NSObject, ObservableObject, SFSpeechRecognizerDelegate
         }
     }
 
-    private func requestMicrophonePermission(_ completion: @escaping (Bool) -> Void) {
+    private func requestMicrophonePermission(_ completion: @escaping @Sendable (Bool) -> Void) {
         if #available(iOS 17.0, *) {
             AVAudioApplication.requestRecordPermission(completionHandler: completion)
         } else {
