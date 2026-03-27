@@ -79,3 +79,4 @@ class MessageRead(BaseModel):
     type: Literal["text", "image"]
     content: str
     created_at: datetime
+    image_data_base64: Optional[str] = None

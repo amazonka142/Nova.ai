@@ -139,6 +139,10 @@ final class ChatViewModel: ObservableObject {
     private let maxFileTextChars = 100_000
     private let maxKnowledgeChars = 20_000
     private let maxFirestoreContentChars = 200_000
+    private let externalContentPreviewChars = 4_000
+    private let maxInlineFirestoreImageBytes = 900_000
+    private let maxStoredMessageContentBytes = 5 * 1024 * 1024
+    private let maxStoredMessageImageBytes = 10 * 1024 * 1024
     private let currentProjectIdKey = "current_project_id"
     private let maxContextMessageCount = 24
     private let maxContextCharacterBudget = 24_000
@@ -2108,6 +2112,7 @@ final class ChatViewModel: ObservableObject {
         Task { @MainActor [weak self] in
             do {
                 try await self?.deleteMessagesBatch(in: chatRef)
+                try await self?.deleteStoredMessageAssets(userId: userId, chatId: chatId)
             } catch {
                 print("Firestore chat deletion failed (\(chatId)): \(error)")
                 self?.errorMessage = "Не удалось удалить чат из облака: \(error.localizedDescription)"
@@ -2128,6 +2133,22 @@ final class ChatViewModel: ObservableObject {
         snapshot.documents.forEach { batch.deleteDocument($0.reference) }
         try await batch.commit()
         try await deleteMessagesBatch(in: chatRef)
+    }
+
+    private func deleteStoredMessageAssets(userId: String, chatId: String) async throws {
+        guard let storage else { return }
+        let baseRef = storage.reference().child("users/\(userId)/chats/\(chatId)/messages")
+        try await deleteStorageTree(at: baseRef)
+    }
+
+    private func deleteStorageTree(at ref: StorageReference) async throws {
+        let result = try await ref.listAll()
+        for prefix in result.prefixes {
+            try await deleteStorageTree(at: prefix)
+        }
+        for item in result.items {
+            try await item.delete()
+        }
     }
     
     // MARK: - Profile Management
@@ -2672,49 +2693,151 @@ final class ChatViewModel: ObservableObject {
             }
         }
     }
-    
-    private func syncMessageToFirestore(_ message: Message, session: ChatSession) {
-        guard let user = userSession, let db else { return }
-        let contentToStore: String
-        if message.content.count > maxFirestoreContentChars {
-            contentToStore = String(message.content.prefix(maxFirestoreContentChars)) + "\n\n[TRUNCATED]"
-        } else {
-            contentToStore = message.content
-        }
-        
+
+    private func messageStorageFolder(userId: String, sessionId: String, messageId: String) -> String {
+        "users/\(userId)/chats/\(sessionId)/messages/\(messageId)"
+    }
+
+    private func messageContentStoragePath(userId: String, sessionId: String, messageId: String) -> String {
+        "\(messageStorageFolder(userId: userId, sessionId: sessionId, messageId: messageId))/content.txt"
+    }
+
+    private func messageImageStoragePath(userId: String, sessionId: String, messageId: String) -> String {
+        "\(messageStorageFolder(userId: userId, sessionId: sessionId, messageId: messageId))/image.bin"
+    }
+
+    private func externalContentPreview(for content: String) -> String {
+        let preview = String(content.prefix(externalContentPreviewChars))
+        guard preview.count < content.count else { return content }
+        return preview + "\n\n[FULL_CONTENT_IN_CLOUD]"
+    }
+
+    private func prepareMessageCloudPayload(
+        message: Message,
+        userId: String,
+        sessionId: String
+    ) async throws -> [String: Any] {
         var data: [String: Any] = [
             "id": message.id.uuidString,
             "role": message.role.rawValue,
-            "content": contentToStore,
             "type": message.type.rawValue,
             "createdAt": Timestamp(date: message.timestamp)
         ]
-        
-        // Optional: Skip large images to save bandwidth/storage costs
-        if let imageData = message.imageData, imageData.count < 1_000_000 { // 1MB limit
-             data["imageData"] = imageData
+
+        let messageId = message.id.uuidString
+        let contentData = Data(message.content.utf8)
+        if contentData.count > maxFirestoreContentChars, let storage {
+            let contentPath = messageContentStoragePath(userId: userId, sessionId: sessionId, messageId: messageId)
+            let contentRef = storage.reference().child(contentPath)
+            _ = try await contentRef.putDataAsync(contentData)
+            data["content"] = externalContentPreview(for: message.content)
+            data["contentStoragePath"] = contentPath
+        } else {
+            data["content"] = message.content
         }
-        
+
+        if let imageData = message.imageData {
+            if imageData.count <= maxInlineFirestoreImageBytes {
+                data["imageData"] = imageData
+            } else if imageData.count <= maxStoredMessageImageBytes, let storage {
+                let imagePath = messageImageStoragePath(userId: userId, sessionId: sessionId, messageId: messageId)
+                let imageRef = storage.reference().child(imagePath)
+                _ = try await imageRef.putDataAsync(imageData)
+                data["imageStoragePath"] = imagePath
+            }
+        }
+
+        return data
+    }
+
+    private func fetchStoredMessageContent(from path: String) async throws -> String {
+        guard let storage else { throw URLError(.resourceUnavailable) }
+        let data = try await storage.reference().child(path).data(maxSize: Int64(maxStoredMessageContentBytes))
+        guard let content = String(data: data, encoding: .utf8) else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        return content
+    }
+
+    private func fetchStoredMessageImage(from path: String) async throws -> Data {
+        guard let storage else { throw URLError(.resourceUnavailable) }
+        return try await storage.reference().child(path).data(maxSize: Int64(maxStoredMessageImageBytes))
+    }
+
+    private func hydrateRestoredMessageAssetsIfNeeded(
+        for message: Message,
+        contentStoragePath: String?,
+        imageStoragePath: String?
+    ) {
+        let needsContentFetch = contentStoragePath != nil && Data(message.content.utf8).count <= maxFirestoreContentChars
+        let needsImageFetch = imageStoragePath != nil && message.imageData == nil
+        guard needsContentFetch || needsImageFetch else { return }
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            var didChange = false
+
+            if let contentStoragePath, needsContentFetch {
+                do {
+                    let fullContent = try await self.fetchStoredMessageContent(from: contentStoragePath)
+                    if message.content != fullContent {
+                        message.content = fullContent
+                        didChange = true
+                    }
+                } catch {
+                    print("Failed to restore full message content: \(error)")
+                }
+            }
+
+            if let imageStoragePath, needsImageFetch {
+                do {
+                    let imageData = try await self.fetchStoredMessageImage(from: imageStoragePath)
+                    if message.imageData != imageData {
+                        message.imageData = imageData
+                        didChange = true
+                    }
+                } catch {
+                    print("Failed to restore full message image: \(error)")
+                }
+            }
+
+            if didChange {
+                self.saveContext()
+            }
+        }
+    }
+    
+    private func syncMessageToFirestore(_ message: Message, session: ChatSession) {
+        guard let user = userSession, let db else { return }
         let safeSessionId = session.ensureUUID().uuidString
         let safeMessageId = message.id.uuidString
-        let signature = "\(safeSessionId)|\(message.role.rawValue)|\(message.type.rawValue)|\(contentToStore.hashValue)|\(message.timestamp.timeIntervalSince1970)|\(data["imageData"] != nil)"
+        let signature = "\(safeSessionId)|\(message.role.rawValue)|\(message.type.rawValue)|\(message.content.hashValue)|\(message.timestamp.timeIntervalSince1970)|\(message.imageData?.count ?? 0)"
         if lastSyncedMessageSignatures[safeMessageId] == signature {
             return
         }
         lastSyncedMessageSignatures[safeMessageId] = signature
-        
-        db.collection("users").document(user.uid)
-            .collection("chats").document(safeSessionId)
-            .collection("messages").document(safeMessageId)
-            .setData(data, merge: true) { [weak self] error in
-                if let error = error {
-                    print("Firestore message sync failed: \(error)")
-                    DispatchQueue.main.async {
-                        self?.lastSyncedMessageSignatures.removeValue(forKey: safeMessageId)
-                        self?.errorMessage = "Не удалось сохранить сообщение: \(error.localizedDescription)"
-                    }
-                }
+
+        let userId = user.uid
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+
+            do {
+                let data = try await self.prepareMessageCloudPayload(
+                    message: message,
+                    userId: userId,
+                    sessionId: safeSessionId
+                )
+
+                try await db.collection("users").document(userId)
+                    .collection("chats").document(safeSessionId)
+                    .collection("messages").document(safeMessageId)
+                    .setData(data, merge: true)
+            } catch {
+                print("Firestore message sync failed: \(error)")
+                self.lastSyncedMessageSignatures.removeValue(forKey: safeMessageId)
+                self.errorMessage = "Не удалось сохранить сообщение: \(error.localizedDescription)"
             }
+        }
     }
     
     private func syncSubscriptionToFirestore() {
@@ -2800,6 +2923,8 @@ final class ChatViewModel: ObservableObject {
                     let type = self.parseMessageType(data["type"] as? String)
                     let createdAt = (data["createdAt"] as? Timestamp)?.dateValue() ?? Date()
                     let imageData = data["imageData"] as? Data
+                    let contentStoragePath = data["contentStoragePath"] as? String
+                    let imageStoragePath = data["imageStoragePath"] as? String
 
                     if let existing = existingById[messageId] {
                         if existing.role != role {
@@ -2810,7 +2935,7 @@ final class ChatViewModel: ObservableObject {
                             existing.type = type
                             didChange = true
                         }
-                        if existing.content != content {
+                        if existing.content != content && (contentStoragePath == nil || Data(existing.content.utf8).count <= maxFirestoreContentChars) {
                             existing.content = content
                             didChange = true
                         }
@@ -2818,10 +2943,15 @@ final class ChatViewModel: ObservableObject {
                             existing.timestamp = createdAt
                             didChange = true
                         }
-                        if existing.imageData != imageData {
+                        if let imageData, existing.imageData != imageData {
                             existing.imageData = imageData
                             didChange = true
                         }
+                        self.hydrateRestoredMessageAssetsIfNeeded(
+                            for: existing,
+                            contentStoragePath: contentStoragePath,
+                            imageStoragePath: imageStoragePath
+                        )
                         continue
                     }
 
@@ -2831,6 +2961,11 @@ final class ChatViewModel: ObservableObject {
                     session.messages.append(restored)
                     existingById[messageId] = restored
                     didChange = true
+                    self.hydrateRestoredMessageAssetsIfNeeded(
+                        for: restored,
+                        contentStoragePath: contentStoragePath,
+                        imageStoragePath: imageStoragePath
+                    )
                 }
 
                 if didChange {

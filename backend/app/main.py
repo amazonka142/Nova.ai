@@ -2,13 +2,14 @@ import base64
 import binascii
 import uuid
 from datetime import datetime, timezone
-from typing import List
+from typing import List, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Query, status
 from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from .auth import AuthContext, ensure_firebase_uid_access, get_auth_context
 from .db import get_db
 from .models import Chat, Message, MessageRole, MessageType, User
 from .schemas import (
@@ -22,6 +23,17 @@ from .schemas import (
 
 app = FastAPI(title="Nova.ai Backend", version="0.1.0")
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
+ADMIN_ONLY_USER_FIELDS = (
+    "is_pro",
+    "is_max",
+    "admin_note",
+    "subscription_expires_at",
+    "daily_request_count",
+    "model_usage",
+    "weekly_model_usage",
+    "last_request_at",
+    "last_weekly_reset_at",
+)
 
 
 def utcnow() -> datetime:
@@ -38,6 +50,42 @@ def parse_uuid(raw_value: str, field_name: str) -> uuid.UUID:
         ) from exc
 
 
+def serialize_message(message: Message) -> MessageRead:
+    encoded_image = None
+    if message.image_data is not None:
+        encoded_image = base64.b64encode(message.image_data).decode("ascii")
+
+    return MessageRead(
+        id=message.id,
+        chat_id=message.chat_id,
+        external_id=message.external_id,
+        role=message.role.value,
+        type=message.type.value,
+        content=message.content,
+        created_at=message.created_at,
+        image_data_base64=encoded_image,
+    )
+
+
+def get_target_firebase_uid(requested_uid: str, auth_context: AuthContext) -> str:
+    if auth_context.is_admin:
+        return requested_uid
+
+    ensure_firebase_uid_access(requested_uid, auth_context)
+    return auth_context.firebase_uid
+
+
+def get_user_by_firebase_uid(firebase_uid: str, db: Session) -> Optional[User]:
+    return db.scalar(select(User).where(User.firebase_uid == firebase_uid))
+
+
+def get_request_user(auth_context: AuthContext, db: Session) -> User:
+    user = get_user_by_firebase_uid(auth_context.firebase_uid, db)
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    return user
+
+
 @app.get("/health")
 def health(db: Session = Depends(get_db)) -> dict:
     db.execute(text("SELECT 1"))
@@ -45,30 +93,38 @@ def health(db: Session = Depends(get_db)) -> dict:
 
 
 @app.post("/users", response_model=UserRead)
-def upsert_user(payload: UserUpsert, db: Session = Depends(get_db)) -> UserRead:
-    user = db.scalar(select(User).where(User.firebase_uid == payload.firebase_uid))
+def upsert_user(
+    payload: UserUpsert,
+    auth_context: AuthContext = Depends(get_auth_context),
+    db: Session = Depends(get_db),
+) -> UserRead:
+    target_firebase_uid = payload.firebase_uid if auth_context.is_admin else auth_context.firebase_uid
+    if not auth_context.is_admin:
+        ensure_firebase_uid_access(payload.firebase_uid, auth_context)
+
+    admin_updates_requested = [
+        field_name for field_name in ADMIN_ONLY_USER_FIELDS if getattr(payload, field_name) is not None
+    ]
+    if admin_updates_requested and not auth_context.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only admins can update subscription or usage fields.",
+        )
+
+    user = get_user_by_firebase_uid(target_firebase_uid, db)
 
     if user is None:
-        user = User(firebase_uid=payload.firebase_uid)
+        user = User(firebase_uid=target_firebase_uid)
         db.add(user)
 
     if payload.email is not None:
         user.email = payload.email
 
-    for field in (
-        "is_pro",
-        "is_max",
-        "admin_note",
-        "subscription_expires_at",
-        "daily_request_count",
-        "model_usage",
-        "weekly_model_usage",
-        "last_request_at",
-        "last_weekly_reset_at",
-    ):
-        value = getattr(payload, field)
-        if value is not None:
-            setattr(user, field, value)
+    if auth_context.is_admin:
+        for field_name in ADMIN_ONLY_USER_FIELDS:
+            value = getattr(payload, field_name)
+            if value is not None:
+                setattr(user, field_name, value)
 
     user.updated_at = utcnow()
 
@@ -86,16 +142,27 @@ def upsert_user(payload: UserUpsert, db: Session = Depends(get_db)) -> UserRead:
 
 
 @app.get("/users/{firebase_uid}", response_model=UserRead)
-def get_user(firebase_uid: str, db: Session = Depends(get_db)) -> UserRead:
-    user = db.scalar(select(User).where(User.firebase_uid == firebase_uid))
+def get_user(
+    firebase_uid: str,
+    auth_context: AuthContext = Depends(get_auth_context),
+    db: Session = Depends(get_db),
+) -> UserRead:
+    target_firebase_uid = get_target_firebase_uid(firebase_uid, auth_context)
+    user = get_user_by_firebase_uid(target_firebase_uid, db)
     if user is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
     return UserRead.model_validate(user)
 
 
 @app.post("/users/{firebase_uid}/chats", response_model=ChatRead, status_code=status.HTTP_201_CREATED)
-def create_chat(firebase_uid: str, payload: ChatCreate, db: Session = Depends(get_db)) -> ChatRead:
-    user = db.scalar(select(User).where(User.firebase_uid == firebase_uid))
+def create_chat(
+    firebase_uid: str,
+    payload: ChatCreate,
+    auth_context: AuthContext = Depends(get_auth_context),
+    db: Session = Depends(get_db),
+) -> ChatRead:
+    target_firebase_uid = get_target_firebase_uid(firebase_uid, auth_context)
+    user = get_user_by_firebase_uid(target_firebase_uid, db)
     if user is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
@@ -126,9 +193,11 @@ def list_chats(
     firebase_uid: str,
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
+    auth_context: AuthContext = Depends(get_auth_context),
     db: Session = Depends(get_db),
 ) -> List[ChatRead]:
-    user = db.scalar(select(User).where(User.firebase_uid == firebase_uid))
+    target_firebase_uid = get_target_firebase_uid(firebase_uid, auth_context)
+    user = get_user_by_firebase_uid(target_firebase_uid, db)
     if user is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
@@ -143,11 +212,21 @@ def list_chats(
 
 
 @app.post("/chats/{chat_id}/messages", response_model=MessageRead, status_code=status.HTTP_201_CREATED)
-def create_message(chat_id: str, payload: MessageCreate, db: Session = Depends(get_db)) -> MessageRead:
+def create_message(
+    chat_id: str,
+    payload: MessageCreate,
+    auth_context: AuthContext = Depends(get_auth_context),
+    db: Session = Depends(get_db),
+) -> MessageRead:
     chat_uuid = parse_uuid(chat_id, "chat_id")
     chat = db.get(Chat, chat_uuid)
     if chat is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chat not found")
+
+    if not auth_context.is_admin:
+        request_user = get_request_user(auth_context, db)
+        if chat.user_id != request_user.id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chat not found")
 
     image_data = None
     if payload.image_data_base64:
@@ -174,6 +253,7 @@ def create_message(chat_id: str, payload: MessageCreate, db: Session = Depends(g
         created_at=payload.created_at or utcnow(),
     )
     db.add(message)
+    chat.last_modified = message.created_at
 
     try:
         db.commit()
@@ -185,7 +265,7 @@ def create_message(chat_id: str, payload: MessageCreate, db: Session = Depends(g
         ) from exc
 
     db.refresh(message)
-    return MessageRead.model_validate(message)
+    return serialize_message(message)
 
 
 @app.get("/chats/{chat_id}/messages", response_model=List[MessageRead])
@@ -193,12 +273,18 @@ def list_messages(
     chat_id: str,
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
+    auth_context: AuthContext = Depends(get_auth_context),
     db: Session = Depends(get_db),
 ) -> List[MessageRead]:
     chat_uuid = parse_uuid(chat_id, "chat_id")
     chat = db.get(Chat, chat_uuid)
     if chat is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chat not found")
+
+    if not auth_context.is_admin:
+        request_user = get_request_user(auth_context, db)
+        if chat.user_id != request_user.id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chat not found")
 
     messages = db.scalars(
         select(Message)
@@ -207,4 +293,4 @@ def list_messages(
         .limit(limit)
         .offset(offset)
     ).all()
-    return [MessageRead.model_validate(message) for message in messages]
+    return [serialize_message(message) for message in messages]

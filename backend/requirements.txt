@@ -4,3 +4,4 @@ SQLAlchemy==2.0.38
 alembic==1.14.1
 psycopg2-binary==2.9.11
 pydantic==2.10.6
+firebase-admin==7.3.0

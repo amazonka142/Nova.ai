@@ -8,6 +8,7 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy.exc import IntegrityError
 
+from app.auth import AuthContext, get_auth_context
 from app.db import get_db
 from app.main import app, parse_uuid
 from app.models import Chat, Message, MessageRole, MessageType, User
@@ -51,14 +52,20 @@ def _build_chat(user_id: uuid.UUID, external_id: str = "chat-ext-1") -> Chat:
     return chat
 
 
-def _build_message(chat_id: uuid.UUID, external_id: str = "msg-ext-1") -> Message:
+def _build_message(
+    chat_id: uuid.UUID,
+    external_id: str = "msg-ext-1",
+    type_: MessageType = MessageType.text,
+    image_data: Optional[bytes] = None,
+) -> Message:
     now = _utcnow()
     message = Message(
         chat_id=chat_id,
         external_id=external_id,
         role=MessageRole.user,
-        type=MessageType.text,
+        type=type_,
         content="hello",
+        image_data=image_data,
         created_at=now,
     )
     message.id = uuid.uuid4()
@@ -145,14 +152,26 @@ def fake_db():
 
 
 @pytest.fixture
-def client(fake_db):
+def auth_state():
+    return {"firebase_uid": "firebase-1", "is_admin": False}
+
+
+@pytest.fixture
+def client(fake_db, auth_state):
     def _override_get_db():
         try:
             yield fake_db
         finally:
             fake_db.close()
 
+    def _override_get_auth_context():
+        return AuthContext(
+            firebase_uid=auth_state["firebase_uid"],
+            is_admin=auth_state["is_admin"],
+        )
+
     app.dependency_overrides[get_db] = _override_get_db
+    app.dependency_overrides[get_auth_context] = _override_get_auth_context
     with TestClient(app) as test_client:
         yield test_client
     app.dependency_overrides.clear()
@@ -177,7 +196,8 @@ def test_parse_uuid_invalid_value_returns_http_400():
     assert exc_info.value.detail == "chat_id must be a valid UUID"
 
 
-def test_upsert_user_creates_new_user(client):
+def test_upsert_user_creates_new_user(client, auth_state):
+    auth_state["firebase_uid"] = "firebase-1"
     response = client.post("/users", json={"firebase_uid": "firebase-1", "email": "new@example.com"})
     assert response.status_code == 200
     body = response.json()
@@ -187,20 +207,45 @@ def test_upsert_user_creates_new_user(client):
     assert body["is_max"] is False
 
 
-def test_upsert_user_updates_existing_user(client, fake_db):
+def test_upsert_user_updates_existing_user(client, fake_db, auth_state):
+    auth_state["firebase_uid"] = "firebase-1"
     existing = _build_user(firebase_uid="firebase-1", email="old@example.com")
     fake_db.scalar_values = [existing]
     response = client.post(
         "/users",
-        json={"firebase_uid": "firebase-1", "email": "new@example.com", "is_pro": True},
+        json={"firebase_uid": "firebase-1", "email": "new@example.com"},
     )
     assert response.status_code == 200
     body = response.json()
     assert body["email"] == "new@example.com"
-    assert body["is_pro"] is True
+    assert body["is_pro"] is False
 
 
-def test_upsert_user_returns_409_on_integrity_error(client, fake_db):
+def test_upsert_user_rejects_admin_only_fields_for_non_admin(client, auth_state):
+    auth_state["firebase_uid"] = "firebase-1"
+    response = client.post(
+        "/users",
+        json={"firebase_uid": "firebase-1", "is_pro": True},
+    )
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Only admins can update subscription or usage fields."
+
+
+def test_upsert_user_allows_admin_only_fields_for_admin(client, fake_db, auth_state):
+    auth_state["firebase_uid"] = "admin-user"
+    auth_state["is_admin"] = True
+    existing = _build_user(firebase_uid="firebase-1", email="old@example.com")
+    fake_db.scalar_values = [existing]
+    response = client.post(
+        "/users",
+        json={"firebase_uid": "firebase-1", "is_pro": True},
+    )
+    assert response.status_code == 200
+    assert response.json()["is_pro"] is True
+
+
+def test_upsert_user_returns_409_on_integrity_error(client, fake_db, auth_state):
+    auth_state["firebase_uid"] = "firebase-2"
     fake_db.commit_exception = IntegrityError("INSERT", {}, Exception("duplicate"))
     response = client.post("/users", json={"firebase_uid": "firebase-2", "email": "dup@example.com"})
     assert response.status_code == 409
@@ -208,27 +253,46 @@ def test_upsert_user_returns_409_on_integrity_error(client, fake_db):
     assert fake_db.did_rollback is True
 
 
-def test_get_user_returns_404_when_missing(client):
+def test_get_user_returns_404_when_missing(client, auth_state):
+    auth_state["firebase_uid"] = "unknown"
     response = client.get("/users/unknown")
     assert response.status_code == 404
     assert response.json()["detail"] == "User not found"
 
 
-def test_get_user_returns_user(client, fake_db):
+def test_get_user_returns_403_for_other_user(client, auth_state):
+    auth_state["firebase_uid"] = "firebase-1"
+    response = client.get("/users/firebase-2")
+    assert response.status_code == 403
+    assert response.json()["detail"] == "You do not have access to this user."
+
+
+def test_get_user_returns_user(client, fake_db, auth_state):
+    auth_state["firebase_uid"] = "firebase-3"
     fake_db.scalar_values = [_build_user(firebase_uid="firebase-3", email="user3@example.com")]
     response = client.get("/users/firebase-3")
     assert response.status_code == 200
     assert response.json()["firebase_uid"] == "firebase-3"
 
 
-def test_create_chat_returns_404_when_user_missing(client):
+def test_create_chat_returns_403_for_other_user(client, auth_state):
+    auth_state["firebase_uid"] = "firebase-1"
+    payload = {"external_id": "chat-ext-1", "title": "Chat 1", "model": "gemini-fast"}
+    response = client.post("/users/firebase-2/chats", json=payload)
+    assert response.status_code == 403
+    assert response.json()["detail"] == "You do not have access to this user."
+
+
+def test_create_chat_returns_404_when_user_missing(client, auth_state):
+    auth_state["firebase_uid"] = "missing"
     payload = {"external_id": "chat-ext-1", "title": "Chat 1", "model": "gemini-fast"}
     response = client.post("/users/missing/chats", json=payload)
     assert response.status_code == 404
     assert response.json()["detail"] == "User not found"
 
 
-def test_create_chat_returns_201(client, fake_db):
+def test_create_chat_returns_201(client, fake_db, auth_state):
+    auth_state["firebase_uid"] = "firebase-4"
     user = _build_user(firebase_uid="firebase-4")
     fake_db.scalar_values = [user]
     payload = {"external_id": "chat-ext-2", "title": "Chat 2", "model": "gemini-fast"}
@@ -239,7 +303,8 @@ def test_create_chat_returns_201(client, fake_db):
     assert body["title"] == "Chat 2"
 
 
-def test_create_chat_returns_409_on_integrity_error(client, fake_db):
+def test_create_chat_returns_409_on_integrity_error(client, fake_db, auth_state):
+    auth_state["firebase_uid"] = "firebase-5"
     user = _build_user(firebase_uid="firebase-5")
     fake_db.scalar_values = [user]
     fake_db.commit_exception = IntegrityError("INSERT", {}, Exception("duplicate chat"))
@@ -250,13 +315,15 @@ def test_create_chat_returns_409_on_integrity_error(client, fake_db):
     assert fake_db.did_rollback is True
 
 
-def test_list_chats_returns_404_when_user_missing(client):
+def test_list_chats_returns_404_when_user_missing(client, auth_state):
+    auth_state["firebase_uid"] = "unknown"
     response = client.get("/users/unknown/chats")
     assert response.status_code == 404
     assert response.json()["detail"] == "User not found"
 
 
-def test_list_chats_returns_chats(client, fake_db):
+def test_list_chats_returns_chats(client, fake_db, auth_state):
+    auth_state["firebase_uid"] = "firebase-6"
     user = _build_user(firebase_uid="firebase-6")
     chat_one = _build_chat(user.id, external_id="chat-ext-a")
     chat_two = _build_chat(user.id, external_id="chat-ext-b")
@@ -283,8 +350,23 @@ def test_create_message_returns_404_when_chat_missing(client):
     assert response.json()["detail"] == "Chat not found"
 
 
-def test_create_message_returns_400_for_invalid_base64(client, fake_db):
-    chat = _build_chat(user_id=uuid.uuid4(), external_id="chat-base64")
+def test_create_message_returns_404_for_chat_owned_by_other_user(client, fake_db, auth_state):
+    auth_state["firebase_uid"] = "firebase-1"
+    owner = _build_user(firebase_uid="firebase-2")
+    chat = _build_chat(user_id=owner.id, external_id="chat-owned-by-someone-else")
+    fake_db.get_values[chat.id] = chat
+    fake_db.scalar_values = [_build_user(firebase_uid="firebase-1")]
+    payload = {"external_id": "msg-2b", "role": "user", "type": "text", "content": "hello"}
+    response = client.post(f"/chats/{chat.id}/messages", json=payload)
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Chat not found"
+
+
+def test_create_message_returns_400_for_invalid_base64(client, fake_db, auth_state):
+    auth_state["firebase_uid"] = "firebase-7"
+    request_user = _build_user(firebase_uid="firebase-7")
+    chat = _build_chat(user_id=request_user.id, external_id="chat-base64")
+    fake_db.scalar_values = [request_user]
     fake_db.get_values[chat.id] = chat
     payload = {
         "external_id": "msg-3",
@@ -298,8 +380,11 @@ def test_create_message_returns_400_for_invalid_base64(client, fake_db):
     assert response.json()["detail"] == "image_data_base64 is not valid base64"
 
 
-def test_create_message_returns_413_for_too_large_image(client, fake_db):
-    chat = _build_chat(user_id=uuid.uuid4(), external_id="chat-large-image")
+def test_create_message_returns_413_for_too_large_image(client, fake_db, auth_state):
+    auth_state["firebase_uid"] = "firebase-8"
+    request_user = _build_user(firebase_uid="firebase-8")
+    chat = _build_chat(user_id=request_user.id, external_id="chat-large-image")
+    fake_db.scalar_values = [request_user]
     fake_db.get_values[chat.id] = chat
     too_large_bytes = b"a" * ((5 * 1024 * 1024) + 1)
     payload = {
@@ -314,8 +399,11 @@ def test_create_message_returns_413_for_too_large_image(client, fake_db):
     assert "exceeds" in response.json()["detail"]
 
 
-def test_create_message_returns_201(client, fake_db):
-    chat = _build_chat(user_id=uuid.uuid4(), external_id="chat-ok")
+def test_create_message_returns_201(client, fake_db, auth_state):
+    auth_state["firebase_uid"] = "firebase-9"
+    request_user = _build_user(firebase_uid="firebase-9")
+    chat = _build_chat(user_id=request_user.id, external_id="chat-ok")
+    fake_db.scalar_values = [request_user]
     fake_db.get_values[chat.id] = chat
     payload = {"external_id": "msg-4", "role": "assistant", "type": "text", "content": "done"}
     response = client.post(f"/chats/{chat.id}/messages", json=payload)
@@ -325,10 +413,33 @@ def test_create_message_returns_201(client, fake_db):
     assert body["role"] == "assistant"
     assert body["type"] == "text"
     assert body["content"] == "done"
+    assert body["image_data_base64"] is None
 
 
-def test_create_message_returns_409_on_integrity_error(client, fake_db):
-    chat = _build_chat(user_id=uuid.uuid4(), external_id="chat-dup-msg")
+def test_create_message_returns_image_payload(client, fake_db, auth_state):
+    auth_state["firebase_uid"] = "firebase-10"
+    request_user = _build_user(firebase_uid="firebase-10")
+    chat = _build_chat(user_id=request_user.id, external_id="chat-image")
+    fake_db.scalar_values = [request_user]
+    fake_db.get_values[chat.id] = chat
+    image_bytes = b"tiny-image"
+    payload = {
+        "external_id": "msg-image",
+        "role": "assistant",
+        "type": "image",
+        "content": "image",
+        "image_data_base64": base64.b64encode(image_bytes).decode("utf-8"),
+    }
+    response = client.post(f"/chats/{chat.id}/messages", json=payload)
+    assert response.status_code == 201
+    assert response.json()["image_data_base64"] == base64.b64encode(image_bytes).decode("ascii")
+
+
+def test_create_message_returns_409_on_integrity_error(client, fake_db, auth_state):
+    auth_state["firebase_uid"] = "firebase-11"
+    request_user = _build_user(firebase_uid="firebase-11")
+    chat = _build_chat(user_id=request_user.id, external_id="chat-dup-msg")
+    fake_db.scalar_values = [request_user]
     fake_db.get_values[chat.id] = chat
     fake_db.commit_exception = IntegrityError("INSERT", {}, Exception("duplicate message"))
     payload = {"external_id": "msg-dup", "role": "user", "type": "text", "content": "hello"}
@@ -344,8 +455,11 @@ def test_list_messages_returns_404_when_chat_missing(client):
     assert response.json()["detail"] == "Chat not found"
 
 
-def test_list_messages_returns_messages(client, fake_db):
-    chat = _build_chat(user_id=uuid.uuid4(), external_id="chat-list-msg")
+def test_list_messages_returns_messages(client, fake_db, auth_state):
+    auth_state["firebase_uid"] = "firebase-12"
+    request_user = _build_user(firebase_uid="firebase-12")
+    chat = _build_chat(user_id=request_user.id, external_id="chat-list-msg")
+    fake_db.scalar_values = [request_user]
     fake_db.get_values[chat.id] = chat
     msg_one = _build_message(chat.id, external_id="msg-one")
     msg_two = _build_message(chat.id, external_id="msg-two")
@@ -356,6 +470,27 @@ def test_list_messages_returns_messages(client, fake_db):
     body = response.json()
     assert len(body) == 2
     assert {body[0]["external_id"], body[1]["external_id"]} == {"msg-one", "msg-two"}
+
+
+def test_list_messages_returns_image_payload(client, fake_db, auth_state):
+    auth_state["firebase_uid"] = "firebase-13"
+    request_user = _build_user(firebase_uid="firebase-13")
+    chat = _build_chat(user_id=request_user.id, external_id="chat-list-image")
+    fake_db.scalar_values = [request_user]
+    fake_db.get_values[chat.id] = chat
+    image_bytes = b"restored-image"
+    image_message = _build_message(
+        chat.id,
+        external_id="msg-image",
+        type_=MessageType.image,
+        image_data=image_bytes,
+    )
+    fake_db.scalars_values = [[image_message]]
+
+    response = client.get(f"/chats/{chat.id}/messages")
+    assert response.status_code == 200
+    body = response.json()
+    assert body[0]["image_data_base64"] == base64.b64encode(image_bytes).decode("ascii")
 
 
 def test_message_factory_has_expected_defaults():
