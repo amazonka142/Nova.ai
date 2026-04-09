@@ -186,7 +186,7 @@ final class ChatViewModel: ObservableObject {
     
     let availableModels = [
         ModelOption(id: "openai-fast", name: "GPT-5 nano", description: "Самая быстрая"),
-        ModelOption(id: "openai", name: "GPT-5 mini", description: "Рекомендуемая"),
+        ModelOption(id: "openai", name: "GPT 5.4 Nano", description: "Рекомендуемая"),
         ModelOption(id: "gemini-fast", name: "Gemini 2.5 Flash Lite", description: "Сбалансированная, лучшая для поиска"),
         ModelOption(id: "mistral", name: "Nova-v1-RLHF", description: "Экспериментальная (Vision)"),
         ModelOption(id: "nova-rp", name: "Nova-v1-RP", description: "Ролевая модель (Roleplay)"),
@@ -2524,7 +2524,7 @@ final class ChatViewModel: ObservableObject {
         // PRO PLAN
         if isPro {
             if model == "deepthink" || model == "image-elite" || model == "deep-research" { return .locked }
-            if model == "openai" { return usage >= 100 ? .limitReached : .allowed } // GPT-5 Mini
+            if model == "openai" { return usage >= 100 ? .limitReached : .allowed } // GPT 5.4 Nano
             // Weekly Limits
             if model == "nova-rp" { return weeklyUsage >= 50 ? .limitReached : .allowed }
             if model == "deepseek" { return weeklyUsage >= 60 ? .limitReached : .allowed } // Nova-v1-Pro

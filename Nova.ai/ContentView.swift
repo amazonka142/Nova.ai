@@ -408,7 +408,7 @@ struct CongratulationOverlay: View {
             ]
         } else {
             return [
-                "Доступ к GPT-5 mini",
+                "Доступ к GPT 5.4 Nano",
                 "Безлимитные сообщения",
                 "Голосовой чат",
                 "Увеличенная память (25 фактов)",
@@ -467,7 +467,7 @@ struct CongratulationOverlay: View {
                                 .multilineTextAlignment(.center)
                                 .padding(.horizontal)
                             
-                            Text("Теперь вы можете работать с более умными моделями (включая GPT-5 mini), и модель может больше о вас запомнить.")
+                            Text("Теперь вы можете работать с более умными моделями (включая GPT 5.4 Nano), и модель может больше о вас запомнить.")
                                 .font(.body)
                                 .foregroundColor(.secondary)
                                 .multilineTextAlignment(.center)
