@@ -412,6 +412,313 @@ final class ChatViewModel: ObservableObject {
         return "Failed to send message: \(error.localizedDescription)"
     }
 
+    private func showLimitBlockerIfNeeded(for targetModel: String) -> Bool {
+        let limitStatus = checkLimit(for: targetModel)
+
+        switch limitStatus {
+        case .locked:
+            if userSession?.isAnonymous == true {
+                showAuthRequest = true
+            } else {
+                showSubscription = true
+            }
+            return true
+        case .limitReached:
+            limitReachedModelName = availableModels.first(where: { $0.id == targetModel })?.name
+                ?? (targetModel == "image" ? "Генерация изображений" : targetModel)
+            showLimitReached = true
+            return true
+        case .allowed:
+            return false
+        }
+    }
+
+    private func textGenerationConfiguration(requestedModel: String) -> (model: String, systemPrompt: String) {
+        var effectiveSystemPrompt = buildEffectiveSystemPrompt()
+        var modelToSend = requestedModel
+
+        if modelToSend == "deepthink" {
+            effectiveSystemPrompt = "You are a deep thinking AI. Use Chain of Thought reasoning. Explain your steps."
+        } else if modelToSend == "nova-rp" {
+            modelToSend = "deepseek"
+            effectiveSystemPrompt = "You are Nova-v1-RP. Engage in a detailed and immersive roleplay. Adopt the persona requested by the user or implied by the context. Do not break character. Be descriptive."
+        }
+
+        return (modelToSend, appendKnowledgeBase(to: effectiveSystemPrompt))
+    }
+
+    private func beginAssistantResponseGeneration(
+        inputToSend: String,
+        requestedModel: String,
+        shouldGenerateTitle: Bool
+    ) {
+        isLoading = true
+        errorMessage = nil
+
+        currentTask = Task {
+            var generatedMessage: Message?
+
+            do {
+                let configuration = textGenerationConfiguration(requestedModel: requestedModel)
+                var modelToSend = configuration.model
+                let strictFocus = UserDefaults.standard.bool(forKey: "ai_strict_focus")
+                let apiMessages = buildAPIContext(
+                    systemPrompt: configuration.systemPrompt,
+                    messages: currentSession.messages,
+                    strictFocus: strictFocus
+                )
+
+                if apiMessages.contains(where: { $0.imageData != nil }) && !supportsVision(modelToSend) {
+                    modelToSend = "mistral"
+                }
+
+                let aiMessage = Message(role: .assistant, content: "")
+                generatedMessage = aiMessage
+                currentSession.messages.append(aiMessage)
+
+                do {
+                    aiMessage.content = try await streamOrRequestResponse(apiMessages, model: modelToSend)
+                } catch {
+                    if isOpenAIModel(modelToSend) && isAzureContentFilterError(error) {
+                        aiMessage.content = try await streamOrRequestResponse(apiMessages, model: "gemini-fast")
+                    } else {
+                        throw error
+                    }
+                }
+
+                currentSession.lastModified = Date()
+
+                self.syncMessageToFirestore(aiMessage, session: self.currentSession)
+                self.syncSessionToFirestore(self.currentSession)
+
+                let notification = UINotificationFeedbackGenerator()
+                notification.notificationOccurred(.success)
+
+                if shouldGenerateTitle {
+                    await generateSessionTitle(from: inputToSend)
+                }
+
+                saveContext()
+
+                Task(priority: .userInitiated) {
+                    await self.generateSmartSuggestions(lastAiMessage: aiMessage.content)
+                }
+            } catch {
+                if !(error is CancellationError) {
+                    errorMessage = userFacingSendErrorMessage(error)
+                    if let generatedMessage, generatedMessage.content.isEmpty,
+                       let index = currentSession.messages.firstIndex(where: { $0.id == generatedMessage.id }) {
+                        currentSession.messages.remove(at: index)
+                        if let context = modelContext, generatedMessage.modelContext != nil {
+                            context.delete(generatedMessage)
+                        }
+                    }
+                }
+            }
+
+            isLoading = false
+            currentTask = nil
+            activeTool = .none
+        }
+    }
+
+    private func generatedImageData(prompt: String) async throws -> Data {
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-._~"))
+        let encodedPrompt = prompt.addingPercentEncoding(withAllowedCharacters: allowed)
+            ?? prompt.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)
+            ?? ""
+        guard !encodedPrompt.isEmpty else { throw URLError(.badURL) }
+        let urlString = "https://gen.pollinations.ai/image/\(encodedPrompt)?model=flux&width=1024&height=1024&nologo=true"
+
+        guard let url = URL(string: urlString) else { throw URLError(.badURL) }
+        guard let apiKey = AppSecrets.pollinationsAPIKey else {
+            throw URLError(.userAuthenticationRequired)
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw URLError(.badServerResponse)
+        }
+        guard (200...299).contains(httpResponse.statusCode) else {
+            let rawBody = String(data: data, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                ?? "Unknown server error"
+            let description = "Image API \(httpResponse.statusCode): \(rawBody)"
+            throw NSError(
+                domain: NSURLErrorDomain,
+                code: NSURLErrorBadServerResponse,
+                userInfo: [NSLocalizedDescriptionKey: description]
+            )
+        }
+
+        return data
+    }
+
+    private func beginImageResponseGeneration(prompt: String) {
+        isLoading = true
+        errorMessage = nil
+
+        currentTask = Task {
+            do {
+                let data = try await generatedImageData(prompt: prompt)
+                let aiMessage = Message(role: .assistant, content: "Изображение по запросу: \(prompt)", type: .image, imageData: data)
+                currentSession.messages.append(aiMessage)
+                currentSession.lastModified = Date()
+                saveContext()
+                syncMessageToFirestore(aiMessage, session: currentSession)
+                syncSessionToFirestore(currentSession)
+            } catch {
+                errorMessage = "Не удалось создать изображение: \(error.localizedDescription)"
+            }
+
+            isLoading = false
+            currentTask = nil
+            activeTool = .none
+        }
+    }
+
+    private func imagePrompt(from content: String) -> String? {
+        let prefixes = ["🎨 Нарисуй:", "Изображение по запросу:"]
+        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        for prefix in prefixes where trimmed.hasPrefix(prefix) {
+            let prompt = trimmed.dropFirst(prefix.count)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return prompt.isEmpty ? nil : prompt
+        }
+
+        return nil
+    }
+
+    private func deleteMessageFromFirestore(_ message: Message, session: ChatSession) {
+        guard let user = userSession, let db else { return }
+        let sessionId = session.ensureUUID().uuidString
+        let messageId = message.id.uuidString
+        let userId = user.uid
+
+        db.collection("users").document(userId)
+            .collection("chats").document(sessionId)
+            .collection("messages").document(messageId)
+            .delete { [weak self] error in
+                if let error {
+                    DispatchQueue.main.async {
+                        self?.errorMessage = "Не удалось удалить старое сообщение из облака: \(error.localizedDescription)"
+                    }
+                }
+            }
+
+        guard let storage else { return }
+        let storageRef = storage.reference().child(messageStorageFolder(userId: userId, sessionId: sessionId, messageId: messageId))
+        Task { @MainActor [weak self] in
+            do {
+                try await self?.deleteStorageTree(at: storageRef)
+            } catch {
+                print("Message storage deletion skipped or failed: \(error)")
+            }
+        }
+    }
+
+    private func removeMessages(from startIndex: Int) {
+        guard currentSession.messages.indices.contains(startIndex) else { return }
+        let removedMessages = Array(currentSession.messages[startIndex...])
+        currentSession.messages.removeSubrange(startIndex...)
+
+        for message in removedMessages {
+            researchStates.removeValue(forKey: message.id)
+            lastSyncedMessageSignatures.removeValue(forKey: message.id.uuidString)
+            deleteMessageFromFirestore(message, session: currentSession)
+
+            if let context = modelContext, message.modelContext != nil {
+                context.delete(message)
+            }
+        }
+    }
+
+    private func removeMessages(after index: Int) {
+        let nextIndex = currentSession.messages.index(after: index)
+        guard nextIndex < currentSession.messages.endIndex else { return }
+        removeMessages(from: nextIndex)
+    }
+
+    func editUserMessage(_ message: Message, newContent: String) {
+        guard !isLoading else { return }
+        guard message.role == .user else { return }
+
+        let cleanContent = newContent.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanContent.isEmpty else { return }
+        guard let messageIndex = currentSession.messages.firstIndex(where: { $0.id == message.id }) else { return }
+
+        let requestedModel = imagePrompt(from: cleanContent) == nil ? selectedModel : "image"
+        if showLimitBlockerIfNeeded(for: requestedModel) { return }
+
+        smartSuggestions = []
+        activeTool = .none
+        removeMessages(after: messageIndex)
+
+        message.content = cleanContent
+        currentSession.lastModified = Date()
+        syncMessageToFirestore(message, session: currentSession)
+        syncSessionToFirestore(currentSession)
+        saveContext()
+
+        incrementUsage(for: requestedModel)
+
+        if let prompt = imagePrompt(from: cleanContent) {
+            beginImageResponseGeneration(prompt: prompt)
+        } else {
+            let nonSystemMessages = currentSession.messages.filter { $0.role != .system }
+            beginAssistantResponseGeneration(
+                inputToSend: cleanContent,
+                requestedModel: requestedModel,
+                shouldGenerateTitle: nonSystemMessages.count <= 1
+            )
+        }
+    }
+
+    func regenerateAssistantResponse(for message: Message) {
+        guard !isLoading else { return }
+        guard message.role == .assistant else { return }
+        guard let messageIndex = currentSession.messages.firstIndex(where: { $0.id == message.id }) else { return }
+
+        let priorMessages = currentSession.messages[..<messageIndex]
+        guard let userMessage = priorMessages.last(where: { $0.role == .user }) else { return }
+
+        let promptForImage = message.type == .image
+            ? (imagePrompt(from: userMessage.content) ?? imagePrompt(from: message.content))
+            : nil
+        let requestedModel = message.type == .image ? "image" : selectedModel
+
+        if message.type == .image && promptForImage == nil {
+            errorMessage = "Не удалось определить запрос для повторной генерации изображения."
+            return
+        }
+
+        if showLimitBlockerIfNeeded(for: requestedModel) { return }
+
+        smartSuggestions = []
+        activeTool = .none
+        removeMessages(from: messageIndex)
+        currentSession.lastModified = Date()
+        syncSessionToFirestore(currentSession)
+        saveContext()
+
+        incrementUsage(for: requestedModel)
+
+        if let promptForImage {
+            beginImageResponseGeneration(prompt: promptForImage)
+        } else {
+            beginAssistantResponseGeneration(
+                inputToSend: userMessage.content,
+                requestedModel: requestedModel,
+                shouldGenerateTitle: false
+            )
+        }
+    }
+
     private func streamOrRequestResponse(_ apiMessages: [API_Message], model: String) async throws -> String {
         do {
             var response = ""
@@ -642,90 +949,17 @@ final class ChatViewModel: ObservableObject {
         let impactMed = UIImpactFeedbackGenerator(style: .medium)
         impactMed.impactOccurred()
         
-        isLoading = true
-        errorMessage = nil
-        
         saveContext()
         
         // Increment Usage
         incrementUsage(for: targetModel)
-        
-        currentTask = Task {
-            do {
-                var effectiveSystemPrompt = buildEffectiveSystemPrompt()
-                var modelToSend = selectedModel
-                
-                if activeTool == .reasoning {
-                    modelToSend = "deepthink"
-                }
-                
-                if modelToSend == "deepthink" {
-                    effectiveSystemPrompt = "You are a deep thinking AI. Use Chain of Thought reasoning. Explain your steps."
-                } else if selectedModel == "nova-rp" {
-                    modelToSend = "deepseek"
-                    effectiveSystemPrompt = "You are Nova-v1-RP. Engage in a detailed and immersive roleplay. Adopt the persona requested by the user or implied by the context. Do not break character. Be descriptive."
-                }
-                
-                effectiveSystemPrompt = appendKnowledgeBase(to: effectiveSystemPrompt)
-                let strictFocus = UserDefaults.standard.bool(forKey: "ai_strict_focus")
-                let apiMessages = buildAPIContext(
-                    systemPrompt: effectiveSystemPrompt,
-                    messages: currentSession.messages,
-                    strictFocus: strictFocus
-                )
 
-                if apiMessages.contains(where: { $0.imageData != nil }) && !supportsVision(modelToSend) {
-                    modelToSend = "mistral"
-                }
-                
-                // Create placeholder AI message
-                let aiMessage = Message(role: .assistant, content: "")
-                currentSession.messages.append(aiMessage)
-                
-                // Primary request + transport fallback; if GPT-* is content-filtered by Azure, auto-fallback to Gemini.
-                do {
-                    aiMessage.content = try await streamOrRequestResponse(apiMessages, model: modelToSend)
-                } catch {
-                    if isOpenAIModel(modelToSend) && isAzureContentFilterError(error) {
-                        aiMessage.content = try await streamOrRequestResponse(apiMessages, model: "gemini-fast")
-                    } else {
-                        throw error
-                    }
-                }
-                
-                currentSession.lastModified = Date()
-                
-                self.syncMessageToFirestore(aiMessage, session: self.currentSession)
-                self.syncSessionToFirestore(self.currentSession)
-                
-                // Haptic: Notification success on completion
-                let notification = UINotificationFeedbackGenerator()
-                notification.notificationOccurred(.success)
-                
-                if currentSession.messages.count <= 2 {
-                    await generateSessionTitle(from: inputToSend)
-                }
-                
-                saveContext()
-                
-                // 3. Генерируем умные подсказки (в фоне)
-                Task(priority: .userInitiated) {
-                    await self.generateSmartSuggestions(lastAiMessage: aiMessage.content)
-                }
-                
-            } catch {
-                if !(error is CancellationError) {
-                    errorMessage = userFacingSendErrorMessage(error)
-                    // Remove the empty message if failed
-                    if let last = currentSession.messages.last, last.role == .assistant, last.content.isEmpty {
-                        currentSession.messages.removeLast()
-                    }
-                }
-            }
-            isLoading = false
-            currentTask = nil
-            activeTool = .none
-        }
+        let nonSystemMessages = currentSession.messages.filter { $0.role != .system }
+        beginAssistantResponseGeneration(
+            inputToSend: inputToSend,
+            requestedModel: targetModel,
+            shouldGenerateTitle: nonSystemMessages.count <= 1
+        )
     }
     
     // MARK: - Voice Mode Logic
@@ -1195,59 +1429,8 @@ final class ChatViewModel: ObservableObject {
         syncSessionToFirestore(currentSession)
         incrementUsage(for: "image")
         
-        let promptToSend = prompt
         inputText = ""
-        isLoading = true
-        
-        currentTask = Task {
-            do {
-                // Pollinations unified image endpoint (gen.pollinations.ai)
-                // Using Flux model, 1024x1024, no logo
-                let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-._~"))
-                let encodedPrompt = promptToSend.addingPercentEncoding(withAllowedCharacters: allowed)
-                    ?? promptToSend.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)
-                    ?? ""
-                guard !encodedPrompt.isEmpty else { throw URLError(.badURL) }
-                let urlString = "https://gen.pollinations.ai/image/\(encodedPrompt)?model=flux&width=1024&height=1024&nologo=true"
-                
-                guard let url = URL(string: urlString) else { throw URLError(.badURL) }
-
-                guard let apiKey = AppSecrets.pollinationsAPIKey else {
-                    throw URLError(.userAuthenticationRequired)
-                }
-
-                var request = URLRequest(url: url)
-                request.httpMethod = "GET"
-                request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-
-                let (data, response) = try await URLSession.shared.data(for: request)
-                guard let httpResponse = response as? HTTPURLResponse else {
-                    throw URLError(.badServerResponse)
-                }
-                guard (200...299).contains(httpResponse.statusCode) else {
-                    let rawBody = String(data: data, encoding: .utf8)?
-                        .trimmingCharacters(in: .whitespacesAndNewlines)
-                        ?? "Unknown server error"
-                    let description = "Image API \(httpResponse.statusCode): \(rawBody)"
-                    throw NSError(
-                        domain: NSURLErrorDomain,
-                        code: NSURLErrorBadServerResponse,
-                        userInfo: [NSLocalizedDescriptionKey: description]
-                    )
-                }
-                
-                let aiMessage = Message(role: .assistant, content: "Изображение по запросу: \(promptToSend)", type: .image, imageData: data)
-                currentSession.messages.append(aiMessage)
-                currentSession.lastModified = Date()
-                saveContext()
-                syncMessageToFirestore(aiMessage, session: currentSession)
-                syncSessionToFirestore(currentSession)
-            } catch {
-                errorMessage = "Не удалось создать изображение: \(error.localizedDescription)"
-            }
-            isLoading = false
-            currentTask = nil
-        }
+        beginImageResponseGeneration(prompt: prompt)
     }
     
     private func performDeepResearch(query: String) {

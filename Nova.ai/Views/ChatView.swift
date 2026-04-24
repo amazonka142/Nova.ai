@@ -9,6 +9,8 @@ struct ChatView: View {
     @State private var previewImage: PreviewImage?
     @State private var selectedResearchId: IdentifiableUUID? // Для открытия шторки деталей
     @State private var selectedArtifact: ArtifactContent? // Для предпросмотра HTML
+    @State private var messageBeingEdited: Message?
+    @State private var editedRequestText = ""
     
     @AppStorage("appLanguage") private var selectedLanguage: AppLanguage = .russian
     
@@ -86,6 +88,21 @@ struct ChatView: View {
         .sheet(item: $selectedArtifact) { artifact in
             ArtifactView(htmlContent: artifact.html)
         }
+        .sheet(item: $messageBeingEdited) { message in
+            EditRequestSheet(
+                text: $editedRequestText,
+                selectedLanguage: selectedLanguage,
+                onCancel: {
+                    messageBeingEdited = nil
+                    editedRequestText = ""
+                },
+                onSave: {
+                    viewModel.editUserMessage(message, newContent: editedRequestText)
+                    messageBeingEdited = nil
+                    editedRequestText = ""
+                }
+            )
+        }
         .fullScreenCover(item: $previewImage) { item in
             PreviewImageViewer(image: item.image)
         }
@@ -136,6 +153,14 @@ struct ChatView: View {
                                 onShowResearchDetails: { selectedResearchId = IdentifiableUUID(id: message.id) },
                                 onPreviewHtml: { html in
                                     selectedArtifact = ArtifactContent(html: html)
+                                },
+                                onEditRequest: { message in
+                                    guard !viewModel.isLoading else { return }
+                                    editedRequestText = message.content
+                                    messageBeingEdited = message
+                                },
+                                onRegenerate: { message in
+                                    viewModel.regenerateAssistantResponse(for: message)
                                 }
                             )
                             .id(message.id)
@@ -275,6 +300,51 @@ struct ArtifactContent: Identifiable {
 struct PreviewImage: Identifiable {
     let id = UUID()
     let image: UIImage
+}
+
+struct EditRequestSheet: View {
+    @Binding var text: String
+    let selectedLanguage: AppLanguage
+    let onCancel: () -> Void
+    let onSave: () -> Void
+
+    private var trimmedText: String {
+        text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var body: some View {
+        NavigationStack {
+            VStack(alignment: .leading, spacing: 14) {
+                Text(selectedLanguage == .russian ? "Измените запрос. Ответы после него будут сгенерированы заново." : "Edit the request. Answers after it will be regenerated.")
+                    .font(.footnote)
+                    .foregroundColor(.secondary)
+                    .padding(.horizontal)
+
+                TextEditor(text: $text)
+                    .frame(minHeight: 220)
+                    .padding(10)
+                    .background(Color(UIColor.secondarySystemBackground))
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .padding(.horizontal)
+
+                Spacer()
+            }
+            .padding(.top, 12)
+            .navigationTitle(selectedLanguage == .russian ? "Исправить запрос" : "Edit Request")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(selectedLanguage == .russian ? "Отмена" : "Cancel", action: onCancel)
+                }
+
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(selectedLanguage == .russian ? "Отправить" : "Send", action: onSave)
+                        .disabled(trimmedText.isEmpty)
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+    }
 }
 
 struct PreviewImageViewer: View {

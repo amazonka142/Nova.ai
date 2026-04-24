@@ -12,6 +12,8 @@ struct ChatBubbleView: View {
     var onOpenReport: (() -> Void)? = nil
     var onShowResearchDetails: (() -> Void)? = nil
     var onPreviewHtml: ((String) -> Void)? = nil
+    var onEditRequest: ((Message) -> Void)? = nil
+    var onRegenerate: ((Message) -> Void)? = nil
     
     @AppStorage("appAccentColor") private var selectedAccentColor: AppAccentColor = .blue
     @AppStorage("appChatStyle") private var chatStyle: AppChatStyle = .bubble
@@ -163,6 +165,23 @@ struct ChatBubbleView: View {
             }
         }
         .padding(.horizontal)
+        .contextMenu {
+            if message.role == .user, let onEditRequest {
+                Button {
+                    onEditRequest(message)
+                } label: {
+                    Label("Исправить запрос", systemImage: "pencil")
+                }
+            }
+
+            if message.role == .assistant, !isTyping, researchState == nil, let onRegenerate {
+                Button {
+                    onRegenerate(message)
+                } label: {
+                    Label("Сгенерировать заново", systemImage: "arrow.clockwise")
+                }
+            }
+        }
     }
     
     private var themeForMessage: Theme {
