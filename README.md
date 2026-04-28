@@ -6,6 +6,11 @@
 
 Nova.ai is an iOS AI assistant app for chat, reasoning, and image generation.
 
+## Roadmap
+
+- **May 2026:** NovaWatch is planned for release as the watchOS companion app for Nova.ai, with chat history, model selection, and AI chat directly on Apple Watch.
+- **2026-2027:** Nova.ai and NovaWatch are planned for App Store release. App Store distribution is delayed until the Apple Developer Program membership is available.
+
 ## Pollinations.ai Integration
 
 Nova.ai uses pollinations.ai APIs in two core flows:
@@ -70,6 +75,7 @@ Recommended Node.js versions: 20 or 22.
 - Image prompt generation and gallery
 - Image input support in chat
 - Project-based chat organization
+- NovaWatch companion app for Apple Watch
 
 ## Credits
 
